@@ -38,7 +38,7 @@ Generality comes from the observation. Each agent sees 16 field-of-view sectors 
 |---|---|
 | [`sim/`](sim/) | Scene generator and multi-agent simulator: seven layout families, pixel-exact label maps, JSON ground truth, configuration-space validation, 13 unit tests. See [`sim/README.md`](sim/README.md). |
 | [`pilot/`](pilot/) | Earlier end-to-end pilot (128 × 128, single agent): U-Net perception, PPO policy, evaluation and figures. See [`pilot/README.md`](pilot/README.md). |
-| [`Proposal_DanielHu_Detailed.md`](Proposal_DanielHu_Detailed.md) | Full project proposal: approach, infrastructure, experiment plan and compute estimate. |
+| [`Detailed Proposal.docx`](Detailed%20Proposal.docx) | Full project proposal: approach, infrastructure, experiment plan and compute estimate. |
 | [`docs/`](docs/) | Figures used in this README. |
 | [`requirements.txt`](requirements.txt) | Python dependencies for `sim/` and `pilot/`. |
 
