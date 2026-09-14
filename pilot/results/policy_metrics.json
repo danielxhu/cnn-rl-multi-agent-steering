@@ -1,0 +1,183 @@
+{
+  "baseline": {
+    "single": {
+      "success_rate": 0.79,
+      "collision_rate": 0.21,
+      "timeout_rate": 0.0,
+      "avg_path_length": 81.39240506329114,
+      "n_episodes": 100
+    },
+    "multi": {
+      "success_rate": 0.46,
+      "collision_rate": 0.54,
+      "timeout_rate": 0.0,
+      "avg_path_length": 83.15217391304348,
+      "n_episodes": 100
+    },
+    "hallway": {
+      "success_rate": 0.22,
+      "collision_rate": 0.78,
+      "timeout_rate": 0.0,
+      "avg_path_length": 76.81818181818181,
+      "n_episodes": 100
+    }
+  },
+  "ppo": {
+    "single": {
+      "per_seed": [
+        {
+          "success_rate": 1.0,
+          "collision_rate": 0.0,
+          "timeout_rate": 0.0,
+          "avg_path_length": 85.82935474812984,
+          "n_episodes": 100
+        },
+        {
+          "success_rate": 1.0,
+          "collision_rate": 0.0,
+          "timeout_rate": 0.0,
+          "avg_path_length": 84.79880800175015,
+          "n_episodes": 100
+        },
+        {
+          "success_rate": 1.0,
+          "collision_rate": 0.0,
+          "timeout_rate": 0.0,
+          "avg_path_length": 83.89454742027446,
+          "n_episodes": 100
+        }
+      ],
+      "aggregate": {
+        "success_rate": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "collision_rate": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "timeout_rate": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "avg_path_length": {
+          "mean": 84.8409033900515,
+          "min": 83.89454742027446,
+          "max": 85.82935474812984
+        },
+        "n_episodes": {
+          "mean": 100.0,
+          "min": 100.0,
+          "max": 100.0
+        }
+      }
+    },
+    "multi": {
+      "per_seed": [
+        {
+          "success_rate": 0.99,
+          "collision_rate": 0.01,
+          "timeout_rate": 0.0,
+          "avg_path_length": 88.80646792724917,
+          "n_episodes": 100
+        },
+        {
+          "success_rate": 1.0,
+          "collision_rate": 0.0,
+          "timeout_rate": 0.0,
+          "avg_path_length": 87.82426246156683,
+          "n_episodes": 100
+        },
+        {
+          "success_rate": 0.99,
+          "collision_rate": 0.01,
+          "timeout_rate": 0.0,
+          "avg_path_length": 86.58701499980508,
+          "n_episodes": 100
+        }
+      ],
+      "aggregate": {
+        "success_rate": {
+          "mean": 0.9933333333333333,
+          "min": 0.99,
+          "max": 1.0
+        },
+        "collision_rate": {
+          "mean": 0.006666666666666667,
+          "min": 0.0,
+          "max": 0.01
+        },
+        "timeout_rate": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "avg_path_length": {
+          "mean": 87.7392484628737,
+          "min": 86.58701499980508,
+          "max": 88.80646792724917
+        },
+        "n_episodes": {
+          "mean": 100.0,
+          "min": 100.0,
+          "max": 100.0
+        }
+      }
+    },
+    "hallway": {
+      "per_seed": [
+        {
+          "success_rate": 0.78,
+          "collision_rate": 0.22,
+          "timeout_rate": 0.0,
+          "avg_path_length": 83.11582892637652,
+          "n_episodes": 100
+        },
+        {
+          "success_rate": 0.78,
+          "collision_rate": 0.22,
+          "timeout_rate": 0.0,
+          "avg_path_length": 82.69628084751253,
+          "n_episodes": 100
+        },
+        {
+          "success_rate": 0.7,
+          "collision_rate": 0.29,
+          "timeout_rate": 0.01,
+          "avg_path_length": 82.10845099935042,
+          "n_episodes": 100
+        }
+      ],
+      "aggregate": {
+        "success_rate": {
+          "mean": 0.7533333333333333,
+          "min": 0.7,
+          "max": 0.78
+        },
+        "collision_rate": {
+          "mean": 0.24333333333333332,
+          "min": 0.22,
+          "max": 0.29
+        },
+        "timeout_rate": {
+          "mean": 0.0033333333333333335,
+          "min": 0.0,
+          "max": 0.01
+        },
+        "avg_path_length": {
+          "mean": 82.64018692441316,
+          "min": 82.10845099935042,
+          "max": 83.11582892637652
+        },
+        "n_episodes": {
+          "mean": 100.0,
+          "min": 100.0,
+          "max": 100.0
+        }
+      }
+    }
+  }
+}

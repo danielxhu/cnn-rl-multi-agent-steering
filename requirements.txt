@@ -1,0 +1,10 @@
+# Scene generator and simulator (sim/)
+numpy>=1.24
+opencv-python-headless>=4.8
+pillow>=10.0
+
+# Pilot: perception, RL training, evaluation, figures (pilot/)
+torch>=2.1
+stable-baselines3>=2.2
+gymnasium>=0.29
+matplotlib>=3.8

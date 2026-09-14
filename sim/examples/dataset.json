@@ -1,0 +1,153 @@
+{
+ "config": {
+  "world": 100.0,
+  "img_size": 512,
+  "agent_radius": 2.0,
+  "fov_deg": 220.0,
+  "fov_range": 22.0,
+  "n_sectors": 16,
+  "max_turn_deg": 25.0,
+  "max_speed": 2.5,
+  "max_steps": 300,
+  "wall_thickness": 3.0,
+  "obstacle_r_min": 4.0,
+  "obstacle_r_max": 10.0,
+  "obstacle_gap": 4.0,
+  "obstacle_clear_agents": 8.0,
+  "obstacle_clear_goal": 6.0,
+  "goal_bonus": 100.0,
+  "collision_penalty": 50.0,
+  "agent_collision_penalty": 25.0,
+  "step_cost": 0.01,
+  "progress_weight": 0.1,
+  "terminate_on_collision": true,
+  "agent_gap": 1.5,
+  "region_margin": 4.0,
+  "cell": 0.25,
+  "min_bottleneck": 5.2,
+  "check_bottleneck": true,
+  "hard_ratio": 0.0,
+  "hard_gap": 0.15,
+  "max_place_tries": 300,
+  "style": {
+   "background": [
+    255,
+    255,
+    255
+   ],
+   "wall_color": [
+    0,
+    0,
+    0
+   ],
+   "obstacle_color": [
+    0,
+    0,
+    0
+   ],
+   "agent_color": [
+    92,
+    45,
+    145
+   ],
+   "start_color": [
+    232,
+    151,
+    58
+   ],
+   "start_alpha": 64,
+   "goal_color": [
+    43,
+    92,
+    230
+   ],
+   "goal_alpha": 89,
+   "agent_line_width": 4.0,
+   "heading_len_mult": 2.2,
+   "region_border_width": 2.0,
+   "region_dash": 10.0,
+   "jitter_line_width": 0.0,
+   "jitter_color": 0.0,
+   "jitter_background": 0.0,
+   "noise_std": 0.0,
+   "blur_sigma": 0.0
+  }
+ },
+ "args": {
+  "n": 7,
+  "out": "examples",
+  "layout": "mixed",
+  "agents": "4-6",
+  "obstacles": "2-4",
+  "hard_ratio": 0.0,
+  "size": 512,
+  "seed": 12,
+  "config": null,
+  "world": null,
+  "agent_radius": null,
+  "wall_thickness": null,
+  "obstacle_radius": null,
+  "min_bottleneck": null,
+  "cell": null,
+  "jitter_color": null,
+  "jitter_line_width": null,
+  "jitter_background": null,
+  "noise_std": null,
+  "blur_sigma": null,
+  "preview": 7,
+  "no_fill_unreachable": false
+ },
+ "n_written": 7,
+ "n_skipped": 0,
+ "scenes": [
+  {
+   "id": "scene_00001",
+   "layout": "open",
+   "n_agents": 5,
+   "n_obstacles": 2,
+   "bottleneck": 29.8828125
+  },
+  {
+   "id": "scene_00002",
+   "layout": "corridor",
+   "n_agents": 6,
+   "n_obstacles": 2,
+   "bottleneck": 16.0546875
+  },
+  {
+   "id": "scene_00003",
+   "layout": "room",
+   "n_agents": 4,
+   "n_obstacles": 2,
+   "bottleneck": 19.921875
+  },
+  {
+   "id": "scene_00004",
+   "layout": "doorway",
+   "n_agents": 6,
+   "n_obstacles": 2,
+   "bottleneck": 11.953125
+  },
+  {
+   "id": "scene_00005",
+   "layout": "two_doorway",
+   "n_agents": 5,
+   "n_obstacles": 4,
+   "bottleneck": 7.5
+  },
+  {
+   "id": "scene_00006",
+   "layout": "cul_de_sac",
+   "n_agents": 6,
+   "n_obstacles": 2,
+   "bottleneck": 9.9609375
+  },
+  {
+   "id": "scene_00007",
+   "layout": "crossing",
+   "n_agents": 6,
+   "n_obstacles": 3,
+   "bottleneck": 6.9140625
+  }
+ ]
+}

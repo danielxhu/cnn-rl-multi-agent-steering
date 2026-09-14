@@ -1,0 +1,23 @@
+{
+  "pixel_accuracy": 0.9973480224609375,
+  "iou": {
+    "background": 0.9968576455289528,
+    "wall": 0.9993100691834074,
+    "fov": 0.9827864813138201,
+    "obstacle": 0.9802741981445714,
+    "goal": 0.7273673257023934,
+    "agent": 0.69064039408867
+  },
+  "geometry": {
+    "agent_center_err": 0.49915083703133045,
+    "heading_err_deg": 5.2907561789587785,
+    "goal_center_err": 0.7080870367490892,
+    "n_obstacles_gt": 2.1166666666666667,
+    "n_obstacles_est": 2.1166666666666667,
+    "obstacle_center_err": 0.7128504206257448,
+    "obstacle_radius_err": 0.15895383636218693
+  },
+  "obstacle_count_accuracy": 1.0,
+  "parse_failures": 0,
+  "n_val": 60
+}

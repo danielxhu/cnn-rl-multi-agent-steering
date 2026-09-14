@@ -1,0 +1,52 @@
+{
+  "best_seed": 1,
+  "showcase_outcomes": {
+    "single obstacle (statement Fig. 1)": "goal",
+    "multi-obstacle (random held-out)": "goal",
+    "hallway, zero-shot (statement Fig. 3)": "goal"
+  },
+  "end_to_end": {
+    "single": {
+      "pipeline": {
+        "success_rate": 1.0,
+        "collision_rate": 0.0,
+        "timeout_rate": 0.0,
+        "parse_failure_rate": 0.0
+      },
+      "oracle": {
+        "success_rate": 1.0,
+        "collision_rate": 0.0,
+        "timeout_rate": 0.0,
+        "parse_failure_rate": 0.0
+      }
+    },
+    "multi": {
+      "pipeline": {
+        "success_rate": 0.98,
+        "collision_rate": 0.02,
+        "timeout_rate": 0.0,
+        "parse_failure_rate": 0.0
+      },
+      "oracle": {
+        "success_rate": 1.0,
+        "collision_rate": 0.0,
+        "timeout_rate": 0.0,
+        "parse_failure_rate": 0.0
+      }
+    },
+    "hallway": {
+      "pipeline": {
+        "success_rate": 0.66,
+        "collision_rate": 0.26,
+        "timeout_rate": 0.08,
+        "parse_failure_rate": 0.0
+      },
+      "oracle": {
+        "success_rate": 0.82,
+        "collision_rate": 0.18,
+        "timeout_rate": 0.0,
+        "parse_failure_rate": 0.0
+      }
+    }
+  }
+}
