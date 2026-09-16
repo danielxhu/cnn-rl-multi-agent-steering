@@ -177,7 +177,9 @@ Notes:
   the dataset into every worker, `--cache ram` forces `num_workers=0`; with
   16 GB RAM it is a sensible option at 128/256 and off by default.
 - Class frequencies for loss weighting are computed once per training set
-  and cached as `<root>/class_freq.json`.
+  and cached as `<root>/class_freq.json`, keyed by resolution (thin classes
+  shrink when downsampled); sets under 100 scenes are not cached, so
+  `sim/examples` stays untouched.
 
 ---
 
@@ -211,7 +213,9 @@ final features ─────┤
 dict `{"seg": ..., "heat": ..., "dir": ...}` (`heat`/`dir` absent when the
 head is off), so the training loop and extractor are indifferent to the
 variant. Both heads share every backbone parameter; the instance head adds
-75 parameters.
+75 parameters. The heat logit's bias starts at −2.19 (CenterNet's prior of
+0.1); otherwise the focal loss is dominated by the 99 % negative pixels at
+initialisation.
 
 ### 3.3 Losses
 
@@ -239,7 +243,7 @@ variant. Both heads share every backbone parameter; the instance head adds
 | seed | `--seed`, seeds Python / NumPy / torch; `cudnn.benchmark=True` unless `--deterministic` |
 | checkpoints | `ckpt_last.pt` every epoch (model, optimiser, scaler, scheduler, epoch, RNG), `ckpt_best.pt` on the selection metric; `--resume` continues from `ckpt_last.pt` |
 | validation | every epoch: pixel accuracy, per-class IoU, mIoU on `val`; every `--extract-every 5` epochs additionally run the full extractor on a fixed 100-scene val subset for agent F1 / centre error |
-| selection metric | agent F1 on the val subset when available, else agent-class IoU |
+| selection metric | agent F1 on the val subset, on the epochs where the extractor runs (the last epoch always does); agent-class IoU only with `--extract-every 0` (the two scales must not be mixed across epochs) |
 | previews | every 10 epochs, `previews/epoch_NN.png`: input / GT labels / predicted labels / parsed scene overlay for 4 fixed val scenes |
 
 Memory estimate for `unet24x4` in fp32 (saved activations ≈ 0.6 GB per
@@ -257,6 +261,9 @@ log.csv            epoch, lr, train_loss, loss_seg, loss_heat, loss_dir, val_pix
 ckpt_last.pt  ckpt_best.pt
 metrics.json       written by evaluate.py: one block per test set
 per_scene.csv      one row per (test set, scene) with every scene-level metric
+agent_rows.csv     written by evaluate.py: one row per ground-truth agent (spacing curve material)
+fig_*.png          written by evaluate.py: spacing curve and example parses per test set
+memory.json        peak GPU memory of the run (CUDA only; §9 step 4)
 previews/          epoch_NN.png
 ```
 
@@ -277,23 +284,40 @@ Pixel ↔ world: `x = px / scale`, `y = world − py / scale`, `scale = S / worl
 Baseline (**A**, classical), used whenever `heat` is absent:
 
 1. `agent_mask = labels == C_AGENT`.
-2. Fixed-radius ring vote: cross-correlate the mask with a ring template of
-   radius `r_px` (agent radius × scale) and width `max(1, lw_px)`
-   (`cv2.filter2D`, normalised so a perfect isolated ring scores 1). This is
-   the Hough circle accumulator for a known radius, computed exactly and
-   deterministically instead of through `cv2.HoughCircles`' internal
-   thresholds.
+2. Fixed-radius ring vote: cross-correlate the mask with an annulus template
+   matching the drawn label ring (`cv2.filter2D`, normalised by the band's
+   pixel count so a perfect isolated ring scores ≈ 1). PIL draws the outline
+   *inward* from the bounding circle of radius `r_px` (agent radius × scale),
+   so the ring occupies radii `[r_px − lw_px, r_px + 0.2 lw_px]` (measured at
+   512: 4.75–11.6 px for `r_px` = 10.24, `lw_px` = 7); the template uses those
+   bounds with a half-pixel margin. This is the Hough circle accumulator for
+   a known radius, computed exactly and deterministically instead of through
+   `cv2.HoughCircles`' internal thresholds.
 3. Non-maximum suppression: peaks above `ring_thresh = 0.45` with minimum
    separation `nms_factor × r_px`, `nms_factor = 1.6` (two agents are never
    closer than `2 r`). Sub-pixel refinement by a 3×3 quadratic fit around
-   each peak.
-4. Heading per detection: take agent pixels with distance in
-   `(r_px + lw_px, 1.3 × heading_len_px)` from the centre that are closer to
-   this centre than to any other detection (Voronoi restriction so a
-   neighbour's line is not counted). θ = `atan2` of their mean offset vector,
-   with the image-y flip. If fewer than 2 such pixels exist (possible at
-   128), fall back to the principal axis of the whole blob and flag
-   `heading_uncertain`.
+   each peak, then a Gauss-Newton circle fit (free radius) to the pixels in
+   the detection's ring band (band pixels shared with a neighbour go to the
+   ring whose radius they match better): the vote peak is flat over ≈ 2 px,
+   and the heading estimate below leans on the centre through an 18 px lever
+   arm.
+4. Heading per detection: candidate pixels are agent pixels at distance in
+   `(r_px + 0.5 lw_px, 1.3 × heading_len_px)` from the centre (outside its
+   own ring, up to a little beyond the line tip) that do not lie in any other
+   detection's ring band. The line is a tight angular cluster of those
+   pixels; a neighbour's line pointing at this agent forms a second cluster
+   of the same size and the annulus alone cannot tell them apart, so the
+   cluster is chosen by the line *root* (the pixels inside the ring's hole
+   belong to this agent's line only), else by the centroid of the whole blob
+   (the ring is symmetric, so the offset points along the line), else by
+   size. θ = `atan2` of the mean offset of the pixels within half a line
+   width of the ray, with the image-y flip, followed by an edge-based
+   re-centring of each 2 px cross-section that removes the bias of a strip
+   cut obliquely by a neighbour's ring band. If fewer than 2 candidate pixels
+   exist (common at 128), θ is the blob centroid direction and
+   `heading_uncertain` is set. On ground-truth label maps this gives a
+   maximum error of 3.9° at 512 and 6.7° at 256 over 218 agents; at 128 the
+   median is 2° but ≈ 7 % of headings flip sign.
 
 Learned (**B**), used when `heat` is present:
 
@@ -314,7 +338,8 @@ Every agent carries a `score` (ring response or heat peak) in
 3. Outer contour of each component; drop contour points 8-adjacent to a
    wall pixel (obstacles may overlap walls in the generator, and the
    obstacle is drawn on top, so the true boundary is where obstacle meets
-   background). Algebraic least-squares circle fit (Kåsa) on the remaining
+   background) and points on the image border (a disk clipped by the edge
+   has a straight run there that is not on the circle). Algebraic least-squares circle fit (Kåsa) on the remaining
    points; `cv2.minEnclosingCircle` as fallback when fewer than 6 points
    survive.
 
@@ -341,10 +366,13 @@ segments, so cost is not a concern.
 
 ### 4.4 Regions and groups
 
-1. Connected components of `labels == C_START` and `labels == C_GOAL`,
-   minimum area 100 px² (regions are ≥ 12 units wide in every layout); each component's
-   bounding box → `Region` (regions are axis-aligned by construction; agents
-   and walls drawn over them punch holes but do not move the box).
+1. Each of `labels == C_START` and `labels == C_GOAL` is closed with a
+   kernel just wider than the agent label line width (rings drawn side by
+   side otherwise split a region in two; a wall, twice as thick, still splits
+   it), then connected components with minimum area 100 px² (regions are
+   ≥ 12 units wide in every layout); each component's bounding box →
+   `Region` (regions are axis-aligned by construction; agents and walls
+   drawn over them punch holes but do not move the box).
 2. Pairing: with one start and one goal, trivial. With more (crossing), pair
    a start with the goal whose interval overlaps it on one axis (left/right
    share a y-range, bottom/top an x-range); unpaired regions are dropped and
@@ -598,10 +626,10 @@ python evaluate.py --ckpt runs/dev_s256/ckpt_best.pt \
                    --data data/test data/test_aug3 data/test_spacing data/test_dense
 python predict.py --ckpt runs/dev_s256/ckpt_best.pt --image data/test/scene_00007.png \
                   --out parsed/                                        # JSON + overlay PNG
-python sweep.py --grid e5 --out runs/e5 --dry-run                      # list the 48 commands
+python sweep.py --grid e5 --out runs/e5 --dry-run                      # list the 24 runs (48 with --grid e5_full)
 python sweep.py --grid e5 --out runs/e5                                # run them, resumable
 python aggregate.py --runs runs/e5 --out results/e5
-python tests/run_tests.py                                              # CPU, ~1 min
+python tests/run_tests.py                                              # CPU, ~10 s
 ```
 
 ---
@@ -821,4 +849,53 @@ Never commit data, checkpoints or run directories.
 Filled in by the implementing agent. One line per deviation from §1–§10:
 what changed, why, and which section was updated.
 
-- (none yet)
+Implemented 2026-09-16 (Claude Fable 5.1). Everything below was found by
+running the extractor on ground-truth label maps (§11.4 step 4) or by the
+smoke runs; each line names the section that was updated to match.
+
+- §4.1 step 2 — ring template geometry. PIL draws the label outline inward
+  from the bounding circle, so the ring spans `[r_px − lw_px, r_px + 0.2 lw_px]`,
+  not "radius `r_px`, width `lw_px`". The template annulus uses the measured
+  bounds and is normalised by the drawn band's pixel count (a perfect ring
+  scores 0.84–0.9 at every resolution; the 0.45 threshold is unchanged).
+- §4.1 step 3 — centre refinement added: a Gauss-Newton circle fit to the
+  ring-band pixels after the quadratic peak fit. The vote peak is ≈ 2 px
+  flat, which left centre errors up to 0.41 units at 512 and biased the
+  headings; now 0.30 / 0.41 / 0.65 units max at 512 / 256 / 128.
+- §4.1 step 4 — heading estimation rewritten. (a) Annulus lower bound
+  `r_px + 0.5 lw_px` (measured ring outer edge + margin) instead of
+  `r_px + lw_px`. (b) The Voronoi restriction is replaced by excluding other
+  detections' ring bands: assigning pixels to the nearest centre hands the
+  tip of a line to the neighbour it points at whenever that neighbour is
+  closer than 2 × heading length (max error 22° at 512 on GT maps with 6–8
+  agents in one start region), and a neighbour's tip lands in this agent's
+  annulus. (c) Angular clustering with the line root / blob centroid as the
+  disambiguator, and an edge-based cross-section fit against oblique cuts.
+  (d) The fallback is the blob centroid direction, not the principal axis
+  (whose sign was wrong in most fallback cases). Result on GT maps: max
+  3.9° at 512, 6.7° at 256; at 128 ≈ 7 % of headings flip sign — that is the
+  fallback regime the section anticipated, and E5 will report it.
+- §4.2 step 3 — contour points on the image border are dropped as well:
+  obstacles clipped by the image edge (allowed by the generator) otherwise
+  fit 0.6 units off.
+- §4.4 step 1 — region masks are closed with a kernel just wider than the
+  label line width before connected components: several agent rings side by
+  side split a corridor start region into two components, and the larger
+  one's box failed the 0.95 IoU tolerance.
+- §3.2 — heat bias initialised to −2.19 (CenterNet prior); with a zero bias
+  the focal loss starts at ≈ 1000 and swamps the segmentation loss.
+- §3.4 — selection metric: `ckpt_best.pt` is chosen only on epochs where the
+  extractor ran (the last epoch always runs it); agent-class IoU is used only
+  with `--extract-every 0`. The original "when available, else IoU" would
+  compare an F1 with an IoU across epochs. Also additive: `agent_rows.csv`,
+  per-set figures from `evaluate.py`, and `memory.json` (peak GPU memory,
+  which §9 step 4 asks for).
+- §2.1 — `class_freq.json` is keyed by resolution and not written for sets
+  under 100 scenes (the smoke run would otherwise leave a file in
+  `sim/examples`).
+- §7.2 — the `sweep.py --dry-run` comment said 48 commands; the `e5` grid is
+  24 runs (§6.2), 48 is `e5_full`. `sweep.py` also offers `--grid e5_extras`
+  for the optional extras of §6.2 (additive). Tests run in ≈ 10 s, not 1 min.
+- §1.2 / §7.1 — checkpoints carry the training set's `world` block so
+  `predict.py` can extract with no dataset at hand; `metrics.scene_metrics`
+  takes an optional `sid` keyword for the per-agent rows. Both additive.
