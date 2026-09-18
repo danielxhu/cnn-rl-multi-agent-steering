@@ -77,13 +77,13 @@ The pilot in [`pilot/`](pilot/) runs the full image → parse → simulate → p
 
 Perception (U-Net trained on renderer-emitted labels, 60 validation scenes): 99.7% pixel accuracy, obstacle count recovered in 100% of scenes, mean agent-center error 0.5 world units, mean heading error 5.3°.
 
-Policy (PPO, 3 seeds, 100 episodes per condition) against a go-straight baseline:
+Policy (PPO, 100 episodes per condition) against a go-straight baseline. "Policy only" runs on ground-truth geometry; "end-to-end" runs the full image → parse → simulate chain with the best of the three seeds:
 
-| Layout | Baseline success | PPO success (mean of 3 seeds) |
-|---|---|---|
-| Single obstacle | 79% | 100% |
-| Multi-obstacle (held-out random) | 46% | 98% |
-| Corridor (zero-shot) | 22% | 66% |
+| Layout | Go-straight baseline | PPO, policy only (mean of 3 seeds) | PPO, end-to-end pipeline (best seed) |
+|---|---|---|---|
+| Single obstacle | 79% | 100% | 100% |
+| Multi-obstacle (held-out random) | 46% | 99% | 98% |
+| Corridor (zero-shot) | 22% | 75% | 66% (82% with oracle geometry) |
 
 End-to-end evaluation: the policy acts inside the parsed scene, so perception errors propagate, and the resulting trajectory is checked against the ground-truth scene. An oracle condition (policy on ground-truth geometry) separates the cost of perception from the cost of the policy. On the zero-shot corridor, success is 66% through the full pipeline and 82% with oracle geometry, with no parse failures.
 
