@@ -419,28 +419,36 @@ bins `[4, 5), [5, 6), [6, 8), [8, 12), [12, ∞)`.
 
 ### 6.1 Cost on the GTX 1070
 
-FLOP count of `unet24x4` (forward, per image): 2.6 G @128, 10.4 G @256,
-41.6 G @512; a training step is ≈ 3× forward. At 60 epochs × 5000 images
-and an effective 1.5–2.5 TFLOPS (the card peaks at 6.5 fp32, but
-24-channel convolutions are memory-bound):
+Measured on the training machine (2026-09-22, 5000 training scenes, batch
+16/8/4, fp32; second epoch of a dev run at each size, peak GPU memory in
+the last column):
 
-| size | per 60-epoch run | note |
-|---|---|---|
-| 128 | ≈ 15–25 min | |
-| 256 | ≈ 1–1.7 h | the proposal's 20–40 min assumed a T4/A10 with tensor cores |
-| 512 | ≈ 4–7 h | 4× the pixels of 256 |
+| size | s / epoch | per 60-epoch run | peak memory |
+|---|---|---|---|
+| 128 | 20 | 0.33 h | 1.34 GB |
+| 256 | 74 | 1.23 h | 3.21 GB |
+| 512 | 281 | 4.68 h | 6.02 GB |
 
-The full 3 × 4 × 2 × 2 factorial (48 runs) would be ≈ 5 days of continuous
-GPU time, almost all of it at 512. Two changes bring it to about a day and
-a half without losing either E5 question:
+512 is 2.4× faster than the FLOP-based estimate this section first carried
+(660 s/epoch); 256 landed on it. The proposal's 20–40 min per run assumed a
+T4/A10 with tensor cores. 6.02 GB on an 8 GB card that also drives the
+Windows desktop is tight but fits; `--batch 2` then `--amp` are the
+fallbacks.
 
-1. **512 trains for 30 epochs.** Every 512 image carries 4× the pixels, so
-   30 epochs see more label pixels than 60 epochs at 256; the schedule
-   (warm-up, cosine) is expressed in epochs and scales with it.
-2. **Star design instead of the full factorial.** The augmentation axis is
-   swept at 256 only (the resolution the pipeline will most likely use);
-   the resolution axis is swept at aug2 only. Both axes still have 2
-   architectures × 2 seeds.
+The full 3 × 4 × 2 × 2 factorial (48 runs) is ≈ 62 h of continuous GPU
+time. One change brings it to under two days without losing either E5
+question:
+
+- **Star design instead of the full factorial.** The augmentation axis is
+  swept at 256 only (the resolution the pipeline will most likely use);
+  the resolution axis is swept at aug2 only. Both axes still have 2
+  architectures × 2 seeds.
+
+**Every size trains for 60 epochs** (`sweep.EPOCHS`). An earlier version of
+this section gave 512 only 30, on the argument that a 512 image carries 4×
+the pixels; the measurement above makes the full 60 affordable (+9.4 h), and
+the resolution arm is the one place where training length must not be a
+second explanation for a difference.
 
 ### 6.2 Grid
 
@@ -449,9 +457,12 @@ a half without losing either E5 question:
 
 | Arm | resolution | training augmentation | architecture | seeds | runs | ≈ time |
 |---|---|---|---|---|---|---|
-| resolution | 128, 256, 512 | aug2 | seg-only, +instance head | 0, 1 | 12 | 1.4 h + 5.5 h + 11 h |
-| augmentation | 256 | aug0, aug1, aug3 (aug2 shared with the arm above) | seg-only, +instance head | 0, 1 | 12 | 16 h |
-| | | | | | **24 runs** | **≈ 34 h** |
+| resolution | 128, 256, 512 | aug2 | seg-only, +instance head | 0, 1 | 12 | 1.3 h + 4.9 h + 18.7 h |
+| augmentation | 256 | aug0, aug1, aug3 (aug2 shared with the arm above) | seg-only, +instance head | 0, 1 | 12 | 14.8 h |
+| | | | | | **24 runs** | **≈ 40 h** |
+
+Times are the measured seconds per epoch of §6.1 × 60 epochs; evaluation adds
+roughly 5 / 18 / 67 s of network time per run plus extraction.
 
 Optional extras, in priority order, each only if the arms above are done:
 `unet24x5` at 512, aug2, both heads, seed 0 (2 runs, ≈ 12 h); 512 × aug3
@@ -702,8 +713,8 @@ training.
 - The per-run times in §6 are FLOP-based estimates for the GTX 1070 and
   must be replaced by the dev-run measurement; if 256 comes in well under
   an hour, the full factorial (`--grid e5_full`) is back on the table.
-- 30 epochs at 512 (vs. 60 elsewhere) is a budget decision; the 512 arm
-  is the one to extend if its validation curve has not flattened.
+- 60 epochs everywhere is now affordable (§6.1); if a validation curve has
+  not flattened by then, extending is a per-arm decision.
 - Agent matching tolerance 2.0 units and the spacing bins are my choice;
   both are single constants in `metrics.py`.
 - `test_dense` (12–16 agents) is included because E3 will need perception at

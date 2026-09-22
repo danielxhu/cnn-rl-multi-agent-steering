@@ -30,13 +30,18 @@ from pathlib import Path
 import _paths  # noqa: F401
 
 SIZES = [128, 256, 512]
+# Every size trains for the same number of epochs, so the resolution arm is not
+# confounded with training length (measured speed allows it; DESIGN.md §6.1).
+EPOCHS = 60
 AUGS = [0, 1, 2, 3]
 ARCHS = ["unet24x4"]
 SEEDS = [0, 1]
 EVAL_SETS = ["test", "test_aug3", "test_spacing", "test_dense"]
 STATUS_COLUMNS = ["name", "status", "start", "end", "seconds", "epoch_seconds"]
-# FLOP-based seconds per epoch on the GTX 1070 (§6.1); replaced by measurement
-ESTIMATED_EPOCH_SECONDS = {128: 20.0, 256: 80.0, 512: 660.0}
+# Seconds per epoch, measured on the GTX 1070 over 5000 training scenes
+# (2026-09-22, second epoch of a dev run at each size; the first epoch is
+# slower: cuDNN algorithm selection and a cold page cache).
+ESTIMATED_EPOCH_SECONDS = {128: 20.0, 256: 74.0, 512: 281.0}
 
 
 @dataclass
@@ -51,7 +56,7 @@ class RunSpec:
 
     @property
     def epochs(self) -> int:
-        return 30 if self.size == 512 else 60
+        return EPOCHS
 
     @property
     def name(self) -> str:
