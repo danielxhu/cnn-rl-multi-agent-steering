@@ -32,7 +32,7 @@ import _paths  # noqa: F401
 from data import SceneDataset, scene_files
 from extract import extract
 from metrics import AGENT_KEYS, SCENE_KEYS, aggregate, scene_metrics
-from predict import Predictor, predict_dataset
+from predict import Predictor, predict_dataset, predict_iter
 from runconfig import default_batch
 from viz import grid, preview_row
 
@@ -58,24 +58,50 @@ def _safe(name: str) -> str:
     return name.replace("/", "_").replace("\\", "_")
 
 
-def evaluate_set(pr: Predictor, name: str, path: Path, batch: int, limit=None, ecfg=None):
-    """Predict + extract + score one directory -> (dataset, predictions, scene rows, agent rows)."""
+def example_indices(n: int, k: int) -> list:
+    """`k` indices spread evenly over `n` scenes (the ones the example figure shows)."""
+    return list(range(0, n, max(1, n // max(1, k))))[:k] if n and k else []
+
+
+def score_scene(ds: SceneDataset, i: int, pred: dict, ecfg, name: str):
+    """Extract + score one prediction -> (scene row, agent rows)."""
+    parsed = extract(pred["labels"], ds.worlds[i], pred.get("heat"), pred.get("dir"), ecfg)
+    m, ar = scene_metrics(ds.scenes[i], ds.labels512(i), parsed, pred["labels"], ds.worlds[i],
+                          ds.size, sid=ds.ids[i])
+    for r in ar:
+        r["set"] = name
+    return {"set": name, "scene": ds.ids[i], "layout": ds.layouts[i], **m}, ar
+
+
+def evaluate_set(pr: Predictor, name: str, path: Path, batch: int, limit=None, ecfg=None,
+                 n_examples: int = 0):
+    """Predict + extract + score one directory, **one scene at a time**.
+
+    Returns (dataset, {index: prediction} for the example figure, scene rows,
+    agent rows).  Each prediction is scored and dropped as it arrives: holding a
+    whole 512 test set (1000 scenes) costs several GB, and the previous set is
+    still referenced while the next one is built, which exhausted the 16 GB
+    training machine (DESIGN.md §11.7).
+    """
     ds = SceneDataset(path, pr.size, limit=limit)
-    idx = list(range(len(ds)))
-    preds = predict_dataset(pr.model, ds, idx, pr.device, batch)
-    rows, arows = score_predictions(ds, preds, ecfg or pr.ecfg, name)
-    return ds, preds, rows, arows
+    ecfg = ecfg or pr.ecfg
+    keep = set(example_indices(len(ds), n_examples))
+    kept, rows, arows = {}, [], []
+    for i, p in predict_iter(pr.model, ds, range(len(ds)), pr.device, batch):
+        m, ar = score_scene(ds, i, p, ecfg, name)
+        rows.append(m)
+        arows.extend(ar)
+        if i in keep:
+            kept[i] = p
+    return ds, kept, rows, arows
 
 
 def score_predictions(ds: SceneDataset, preds: list, ecfg, name: str):
+    """Score a list of predictions already in memory (threshold tuning)."""
     rows, arows = [], []
     for i, p in enumerate(preds):
-        parsed = extract(p["labels"], ds.worlds[i], p.get("heat"), p.get("dir"), ecfg)
-        m, ar = scene_metrics(ds.scenes[i], ds.labels512(i), parsed, p["labels"], ds.worlds[i],
-                              ds.size, sid=ds.ids[i])
-        rows.append({"set": name, "scene": ds.ids[i], "layout": ds.layouts[i], **m})
-        for r in ar:
-            r["set"] = name
+        m, ar = score_scene(ds, i, p, ecfg, name)
+        rows.append(m)
         arows.extend(ar)
     return rows, arows
 
@@ -108,14 +134,15 @@ def spacing_figure(agg: dict, title: str, path: Path):
     plt.close(fig)
 
 
-def examples_figure(ds: SceneDataset, preds: list, ecfg, path: Path, n=4):
-    idx = list(range(0, len(ds), max(1, len(ds) // n)))[:n]
+def examples_figure(ds: SceneDataset, kept: dict, ecfg, path: Path):
+    """input / GT labels / predicted labels / parsed overlay for the kept scenes."""
     rows = []
-    for i in idx:
-        p = preds[i]
+    for i in sorted(kept):
+        p = kept[i]
         parsed = extract(p["labels"], ds.worlds[i], p.get("heat"), p.get("dir"), ecfg)
         rows.append(preview_row(ds.image_uint8(i), ds.labels_uint8(i), p["labels"], parsed, ds.scenes[i]))
-    grid(rows).save(path)
+    if rows:
+        grid(rows).save(path)
 
 
 # --------------------------------------------------------------- evaluate
@@ -132,7 +159,8 @@ def evaluate(ckpt, data_dirs, out_dir=None, figures=True, limit=None, device=Non
     all_rows, all_arows = [], []
     for name, path in expand_data_dirs(data_dirs):
         t0 = time.time()
-        ds, preds, rows, arows = evaluate_set(pr, name, path, batch, limit)
+        ds, kept, rows, arows = evaluate_set(pr, name, path, batch, limit,
+                                             n_examples=4 if figures else 0)
         agg = aggregate(rows, arows)
         agg["seconds"] = time.time() - t0
         agg["path"] = str(path)
@@ -142,7 +170,7 @@ def evaluate(ckpt, data_dirs, out_dir=None, figures=True, limit=None, device=Non
         all_arows.extend(arows)
         if figures:
             spacing_figure(agg, f"{name} @ {pr.size}", out_dir / f"fig_spacing_{_safe(name)}.png")
-            examples_figure(ds, preds, pr.ecfg, out_dir / f"fig_examples_{_safe(name)}.png")
+            examples_figure(ds, kept, pr.ecfg, out_dir / f"fig_examples_{_safe(name)}.png")
         o = agg["overall"]
         print(f"{name:<24s} n={o['n_scenes']:<5d} agent_f1 {o['agent_f1']:.3f}  "
               f"cerr {o['agent_center_err']:.3f}  head {o['heading_err_deg']:.1f}°  "

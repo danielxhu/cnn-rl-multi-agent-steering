@@ -56,18 +56,27 @@ def load_checkpoint(path, device=None):
 
 
 @torch.no_grad()
-def predict_tensor(model, x: torch.Tensor, device) -> list:
-    """(B,3,S,S) float in [0,1] -> list of dicts (labels u8, probs f32, [heat, dir])."""
+def predict_tensor(model, x: torch.Tensor, device, want_probs: bool = False) -> list:
+    """(B,3,S,S) float in [0,1] -> list of dicts (labels u8, [probs f32], [heat, dir]).
+
+    ``probs`` is 24 times the size of ``labels`` (6 float32 channels against one
+    uint8) and nothing downstream reads it -- the extractor takes the label map
+    -- so it is computed only on request.  The argmax runs on the device and is
+    narrowed to uint8 there, so no int64 copy of the batch ever reaches host RAM.
+    """
     was_training = model.training
     model.eval()
     out = model(x.to(device, non_blocking=True))
     if was_training:
         model.train()
-    probs = torch.softmax(out["seg"].float(), 1).cpu().numpy()
-    labels = probs.argmax(1).astype(np.uint8)
+    seg = out["seg"].float()
+    labels = seg.argmax(1).to(torch.uint8).cpu().numpy()
+    probs = torch.softmax(seg, 1).cpu().numpy() if want_probs else None
     res = []
     for b in range(len(labels)):
-        r = {"labels": labels[b], "probs": probs[b]}
+        r = {"labels": labels[b]}
+        if probs is not None:
+            r["probs"] = probs[b]
         if "heat" in out:
             r["heat"] = out["heat"][b, 0].float().cpu().numpy()
             r["dir"] = out["dir"][b].float().cpu().numpy()
@@ -75,16 +84,27 @@ def predict_tensor(model, x: torch.Tensor, device) -> list:
     return res
 
 
-def predict_dataset(model, ds, indices, device, batch: int) -> list:
-    """Predictions for `indices` of a SceneDataset, in order, batched (no DataLoader)."""
-    out = []
+def predict_iter(model, ds, indices, device, batch: int, want_probs: bool = False):
+    """Yield ``(index, prediction)`` for `indices` of a SceneDataset, in order.
+
+    The caller decides what to keep, so a whole test set never sits in memory at
+    once: at 512 with the instance head one prediction is ~3.3 MB, and 1000 of
+    them (twice over, while the next set is being built) exhausted the 16 GB
+    training machine.
+    """
     indices = list(indices)
     for k in range(0, len(indices), batch):
         chunk = indices[k:k + batch]
         x = torch.from_numpy(np.stack([ds.image_uint8(i).transpose(2, 0, 1) for i in chunk])
                              ).float() / 255.0
-        out.extend(predict_tensor(model, x, device))
-    return out
+        for i, pred in zip(chunk, predict_tensor(model, x, device, want_probs)):
+            yield i, pred
+
+
+def predict_dataset(model, ds, indices, device, batch: int, want_probs: bool = False) -> list:
+    """Every prediction for `indices`, in order.  Use `predict_iter` for a whole
+    test set: this holds them all."""
+    return [p for _, p in predict_iter(model, ds, indices, device, batch, want_probs)]
 
 
 class Predictor:
@@ -95,16 +115,17 @@ class Predictor:
         self.world = self.model._ckpt_meta.get("world") or default_world()
         self.ecfg = self.cfg.extract
 
-    def predict_tensor(self, x: torch.Tensor) -> list:
-        return predict_tensor(self.model, x, self.device)
+    def predict_tensor(self, x: torch.Tensor, want_probs: bool = True) -> list:
+        return predict_tensor(self.model, x, self.device, want_probs)
 
-    def predict_batch(self, images_uint8: list) -> list:
+    def predict_batch(self, images_uint8: list, want_probs: bool = True) -> list:
         x = torch.from_numpy(np.stack([
             resize_image(np.asarray(im, np.uint8), self.size).transpose(2, 0, 1)
             for im in images_uint8])).float() / 255.0
-        return self.predict_tensor(x)
+        return self.predict_tensor(x, want_probs)
 
     def __call__(self, image_uint8) -> dict:
+        """One image; `probs` is included here (a single image costs little)."""
         return self.predict_batch([image_uint8])[0]
 
     def parse(self, image_uint8, world=None):

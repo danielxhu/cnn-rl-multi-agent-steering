@@ -592,6 +592,9 @@ def total_loss(out, batch, class_weights, tcfg) -> (loss, {"seg":…, "heat":…
 
 # predict.py
 def load_checkpoint(path, device) -> (UNet, RunConfig)
+def predict_tensor(model, x, device, want_probs=False) -> list   # labels u8, [probs], [heat, dir]
+def predict_iter(model, ds, indices, device, batch, want_probs=False)  # yields (index, prediction)
+def predict_dataset(model, ds, indices, device, batch, want_probs=False) -> list  # holds them all
 class Predictor:
     def __init__(self, ckpt_path, device=None)
     def __call__(self, image_uint8) -> dict    # resizes to the run's size; labels (S,S) u8,
@@ -910,3 +913,22 @@ smoke runs; each line names the section that was updated to match.
 - §1.2 / §7.1 — checkpoints carry the training set's `world` block so
   `predict.py` can extract with no dataset at hand; `metrics.scene_metrics`
   takes an optional `sid` keyword for the per-agent rows. Both additive.
+
+Found while running the sweep (2026-09-26):
+
+- §7.1 — **evaluation streams instead of materialising a test set.** The
+  first 512 run died in `evaluate.py` with a host-RAM `ArrayMemoryError`
+  (not a GPU one): `predict_dataset` held every prediction of a set, and
+  each carried a `probs` array of 6 float32 channels — 6.25 MiB per scene at
+  512, 6.25 GB for a 1000-scene set, and the previous set was still
+  referenced while the next was built, so two of them exhausted the 16 GB
+  machine. Three changes: `probs` is now computed only on request
+  (`want_probs`, default off; nothing downstream reads it — the extractor
+  takes the label map, and only `Predictor.__call__` for a single image
+  still returns it); the argmax runs on the device and is narrowed to uint8
+  there, so no int64 copy of a batch reaches host RAM; and `evaluate_set`
+  consumes a new `predict_iter` generator, scoring and dropping each scene
+  as it arrives and keeping only the four the example figure needs. Verified
+  bit-identical to the old path on a trained checkpoint. 128 and 256 were
+  never affected (1/16 and 1/4 of the memory), so the six runs already
+  evaluated need no redo.
