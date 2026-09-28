@@ -392,6 +392,51 @@ def test_checkpoint_roundtrip():
     shutil.rmtree(SCRATCH, ignore_errors=True)
 
 
+# ------------------------------------------------------------ drawing sheet
+
+@test
+def test_rectify_recovers_sheet_and_id():
+    """A tilted, unevenly lit, JPEG-compressed photo of a drawing sheet is
+    rectified to the world square within 2 px of 512, and its id is read."""
+    import io
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    sys.path.insert(0, str(_paths.PERCEPTION_DIR / "scripts"))
+    import make_sheets
+    import sheet
+    from rectify import rectify, world_square_matrix
+
+    cfg = Config()
+    s = random_scene(np.random.default_rng(4), cfg, layout="doorway", n_agents=3, n_obstacles=2)
+    fig, ax = make_sheets.new_page()
+    make_sheets.draw_furniture(ax, 37, "t", cfg)
+    make_sheets.draw_scene(ax, s, cfg)
+    buf = io.BytesIO()
+    fig.savefig(buf, dpi=120, format="png")
+    plt.close(fig)
+    page = cv2.imdecode(np.frombuffer(buf.getvalue(), np.uint8), cv2.IMREAD_COLOR)
+    h, w = page.shape[:2]
+    src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    dst = np.float32([[120, 90], [w + 60, 150], [w + 20, h + 170], [60, h + 110]])
+    G = cv2.getPerspectiveTransform(src, dst)
+    photo = cv2.warpPerspective(page, G, (w + 200, h + 260), borderValue=(60, 80, 70))
+    yy, xx = np.mgrid[0:photo.shape[0], 0:photo.shape[1]] / max(photo.shape)
+    photo = np.clip(photo * (0.6 + 0.4 * (1 - (xx - .2) ** 2 - (yy - .3) ** 2))[..., None], 0, 255).astype(np.uint8)
+    photo = cv2.imdecode(cv2.imencode(".jpg", photo, [cv2.IMWRITE_JPEG_QUALITY, 70])[1], cv2.IMREAD_COLOR)
+
+    img, info = rectify(photo)
+    assert img.shape == (512, 512, 3)
+    assert info["sheet_id"] == 37, f"id read as {info['sheet_id']}"
+    s_ = 120 / 25.4
+    raster_to_mm = np.array([[1 / s_, 0, 0], [0, -1 / s_, sheet.PAGE_H], [0, 0, 1]])
+    M_true = world_square_matrix(512) @ raster_to_mm @ np.linalg.inv(G)
+    q = np.float32([[x, y] for x in (0, 256, 512) for y in (0, 256, 512)])
+    back = cv2.perspectiveTransform(cv2.perspectiveTransform(q[None], np.linalg.inv(M_true)), info["homography"])[0]
+    err = float(np.abs(back - q).max())
+    assert err < 2.0, f"rectification off by {err:.2f} px"
+
+
 def main():
     failed = 0
     for fn in TESTS:
