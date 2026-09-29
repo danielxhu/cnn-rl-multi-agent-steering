@@ -3,6 +3,7 @@
     python train.py --data-root data --train train_aug2 --val val --size 256 \\
                     --arch unet24x4 --seed 0 --out runs/dev_s256
     python train.py ... --instance-head            # variant B
+    python train.py ... --train train_sketch train_aug3   # several sets, concatenated
     python train.py ... --resume                   # continue from ckpt_last.pt
 
 Run directory contents:
@@ -36,13 +37,13 @@ import torch
 
 import _paths  # noqa: F401
 from config import C_AGENT, N_CLASSES
-from data import SceneDataset, class_frequencies, make_loader
+from data import SceneDataset, class_frequencies, concat_datasets, make_loader, parts_of
 from extract import extract
 from losses import class_weights_from_freq, total_loss
 from metrics import aggregate, scene_metrics
 from model import build_model, count_params
 from predict import predict_dataset, resolve_device
-from runconfig import RunConfig, build_parser, resolve_amp
+from runconfig import RunConfig, build_parser, resolve_amp, train_dirs
 from viz import grid, preview_row
 
 LOG_COLUMNS = ["epoch", "lr", "train_loss", "loss_seg", "loss_heat", "loss_dir",
@@ -182,8 +183,9 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
     batch = cfg.batch
 
     root = Path(dcfg.root)
-    train_ds = SceneDataset(root / dcfg.train, dcfg.size, instance_targets=cfg.model.instance_head,
-                            layouts=dcfg.layouts, cache=dcfg.cache)
+    train_ds = concat_datasets([
+        SceneDataset(root / name, dcfg.size, instance_targets=cfg.model.instance_head,
+                     layouts=dcfg.layouts, cache=dcfg.cache) for name in train_dirs(dcfg)])
     val_ds = SceneDataset(root / dcfg.val, dcfg.size, instance_targets=False, layouts=dcfg.layouts)
     class_weights = class_weights_from_freq(class_frequencies(train_ds))
     workers = 0 if dcfg.cache else dcfg.num_workers
@@ -215,7 +217,7 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
         best = rec.get("best_metric") if rec.get("best_metric") is not None else -math.inf
         print(f"resumed from epoch {start_epoch}")
     cfg.save(run_dir / "config.json")
-    world = train_ds.worlds[0]
+    world = parts_of(train_ds)[0].worlds[0]
 
     log_path = run_dir / "log.csv"
     new_log = not (resume and start_epoch > 0 and log_path.exists())

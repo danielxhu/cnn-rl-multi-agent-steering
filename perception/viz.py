@@ -76,6 +76,19 @@ def draw_parsed(image_uint8, parsed, gt_scene=None, width=2) -> Image.Image:
     return img
 
 
+def render_clean(parsed) -> Image.Image:
+    """A centre-line parse (``wall_mode="lines"``) drawn by the generator's own
+    renderer: what the scene looks like as a generated scene."""
+    from config import Config
+    from render import render
+    w = parsed.world
+    cfg = Config().merged(world=float(w["size"]), img_size=int(parsed.size),
+                          agent_radius=float(w["agent_radius"]),
+                          wall_thickness=float(w["wall_thickness"]))
+    img, _ = render(parsed.scene, cfg, fill_unreachable=True)
+    return img
+
+
 def panel(images, pad=4, bg=(255, 255, 255)) -> Image.Image:
     """Side-by-side strip of PIL images / uint8 arrays, resized to a common height."""
     ims = [im if isinstance(im, Image.Image) else Image.fromarray(to_uint8_image(im))

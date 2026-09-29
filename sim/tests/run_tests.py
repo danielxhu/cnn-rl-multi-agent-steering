@@ -228,6 +228,46 @@ def test_label_map_contains_every_class():
     assert (lab == C_AGENT).sum() > 0
 
 
+# ---------------------------------------------------------------- sketch
+
+@test
+def test_sketch_is_deterministic():
+    """Same scene and seed -> identical image, labels and drawn JSON."""
+    from sketch import sketch
+    cfg = Config()
+    s = random_scene(np.random.default_rng(11), cfg, layout="crossing", n_agents=6, n_obstacles=3)
+    s.seed = 1234
+    img1, lab1, d1 = sketch(s, cfg)
+    img2, lab2, d2 = sketch(s, cfg, rng=np.random.default_rng(1234))
+    assert np.array_equal(np.asarray(img1), np.asarray(img2))
+    assert np.array_equal(lab1, lab2)
+    assert d1.as_dict(cfg, "t") == d2.as_dict(cfg, "t")
+    s.seed = 1235
+    img3, _, d3 = sketch(s, cfg)
+    assert not np.array_equal(np.asarray(img1), np.asarray(img3)), "the seed must matter"
+    assert d1.as_dict(cfg, "t") != d3.as_dict(cfg, "t")
+
+
+@test
+def test_sketch_labels_contain_every_class():
+    import render as render_mod
+    import sketch as sketch_mod
+    cfg = Config()
+    for x, y in ((0, 0), (12.5, 80.0), (100, 100)):
+        assert sketch_mod._to_px(cfg, x, y) == render_mod._to_px(cfg, x, y), "one y flip"
+    rng = np.random.default_rng(7)
+    s = random_scene(rng, cfg, layout="corridor", n_agents=4, n_obstacles=3)
+    s.seed = 7
+    img, lab, _ = sketch_mod.sketch(s, cfg, style=sketch_mod.SketchStyle(hatch_prob=1.0))
+    assert lab.shape == (cfg.img_size, cfg.img_size) and np.asarray(img).shape == lab.shape + (3,)
+    for cls in range(6):
+        assert (lab == cls).any(), f"class {cls} missing from the sketch label map"
+    # corridor: the dead space above and below is hatched, so labelled wall
+    assert (lab == 1).mean() > 0.2, "hatched dead space must be labelled wall"
+    _, lab_blank, _ = sketch_mod.sketch(s, cfg, style=sketch_mod.SketchStyle(hatch_prob=0.0))
+    assert (lab_blank == 1).mean() < 0.1, "blank dead space must stay background"
+
+
 def main():
     failed = 0
     for fn in TESTS:

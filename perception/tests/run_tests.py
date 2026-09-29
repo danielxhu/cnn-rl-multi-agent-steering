@@ -18,7 +18,7 @@ import _paths  # noqa: E402,F401
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
-from config import C_AGENT, C_OBST, C_WALL, N_CLASSES, Config  # noqa: E402
+from config import C_AGENT, C_GOAL, C_OBST, C_START, C_WALL, N_CLASSES, Config  # noqa: E402
 from layouts import LAYOUTS, random_scene  # noqa: E402
 from physics import Simulator, greedy_action  # noqa: E402
 from render import _to_px, render  # noqa: E402
@@ -435,6 +435,214 @@ def test_rectify_recovers_sheet_and_id():
     back = cv2.perspectiveTransform(cv2.perspectiveTransform(q[None], np.linalg.inv(M_true)), info["homography"])[0]
     err = float(np.abs(back - q).max())
     assert err < 2.0, f"rectification off by {err:.2f} px"
+
+
+@test
+def test_multi_root_training_set():
+    """--train accepts several directories: datasets concatenate, class
+    frequencies combine by pixel counts, and configs whose data.train is a
+    string (every run before this change) still load and train the same."""
+    import json
+    from data import SceneDataset, class_frequencies, concat_datasets, parts_of
+    from runconfig import RunConfig, train_dirs
+
+    old = RunConfig().to_dict()
+    old["data"]["train"] = "train_aug3"
+    cfg = RunConfig.from_dict(json.loads(json.dumps(old)))
+    assert cfg.data.train == "train_aug3" and train_dirs(cfg.data) == ["train_aug3"]
+    one = RunConfig.from_args(["--train", "train_aug3", "--out", "x"])
+    assert one.data.train == "train_aug3", "one --train stays a string"
+    two = RunConfig.from_args(["--train", "train_sketch", "train_aug3", "--out", "x"])
+    assert two.data.train == ["train_sketch", "train_aug3"]
+    assert RunConfig.from_dict(two.to_dict()).data.train == ["train_sketch", "train_aug3"]
+
+    a = SceneDataset(EXAMPLES, 128)
+    b = SceneDataset(EXAMPLES, 128, limit=3)
+    ab = concat_datasets([a, b])
+    assert len(ab) == len(a) + len(b) and parts_of(ab) == [a, b]
+    assert concat_datasets([a]) is a
+    assert ab[len(a)]["labels"].shape == (128, 128)
+    counts = sum(np.bincount(d.labels_uint8(i).ravel(), minlength=N_CLASSES)[:N_CLASSES]
+                 for d in (a, b) for i in range(len(d)))
+    assert np.allclose(class_frequencies(ab), counts / counts.sum())
+
+
+# -------------------------------------------------------- sketch (hand-drawn)
+
+_SKETCHES = []
+
+
+def _sketch_scenes(cfg):
+    """One sketch scene per layout (2–8 agents), with the per-agent ring and
+    tail maps the renderer drew; rendered once and cached across tests."""
+    if not _SKETCHES:
+        from sketch import sketch
+        rng = np.random.default_rng(77)
+        for k, layout in enumerate(LAYOUTS):
+            s = random_scene(rng, cfg, layout=layout, n_agents=int(rng.integers(2, 9)),
+                             n_obstacles=int(rng.integers(1, 5)))
+            assert s is not None, f"{layout}: sampler gave up"
+            s.seed = 9000 + k
+            img, lab, drawn, parts = sketch(s, cfg, parts=True)
+            _SKETCHES.append((drawn, lab, parts))
+    return _SKETCHES
+
+
+def _circle_fit(xs, ys):
+    """Algebraic (Kåsa) circle fit -> centre (x, y)."""
+    A = np.c_[xs, ys, np.ones_like(xs)]
+    sol = np.linalg.lstsq(A, xs * xs + ys * ys, rcond=None)[0]
+    return sol[0] / 2, sol[1] / 2
+
+
+@test
+def test_sketch_json_matches_drawing():
+    """The written JSON is the drawn geometry (DESIGN_SKETCH §3.1 step 4): every
+    agent centre within 1 px of the centre of its drawn label ring, every heading
+    within 5° of its drawn label tail, measured on the label strokes themselves.
+
+    The ring's centre is measured by a circle fit to its label pixels: the raw
+    pixel centroid is pulled up to ~2 px off by the ±35 % pen-pressure width
+    variation (one thick side), so it is only held to 2.5 px (DESIGN_SKETCH §8).
+    """
+    cfg = Config()
+    n_agents = 0
+    for drawn, lab, parts in _sketch_scenes(cfg):
+        rings, tails = parts["rings"], parts["tails"]
+        assert (lab[(rings > 0) | (tails > 0)] == C_AGENT).all(), "ring/tail maps must be agent label"
+        for k, a in enumerate(drawn.agents):
+            cx, cy = world_to_px(cfg.world, cfg.img_size, *a.pos)
+            ys, xs = np.nonzero(rings == k + 1)
+            fx, fy = _circle_fit(xs.astype(float), ys.astype(float))
+            err = math.hypot(fx - cx, fy - cy)
+            assert err <= 1.0, f"{drawn.layout} agent {k}: JSON centre {err:.2f} px from the drawn ring"
+            raw = math.hypot(xs.mean() - cx, ys.mean() - cy)
+            assert raw <= 2.5, f"{drawn.layout} agent {k}: ring pixel centroid {raw:.2f} px away"
+            ty, tx = np.nonzero(tails == k + 1)
+            P = np.c_[tx, -ty].astype(float)                    # y up, like the heading
+            mu = P.mean(0)
+            u = np.linalg.svd(P - mu, full_matrices=False)[2][0]
+            if np.dot(u, mu - np.array([cx, -cy])) < 0:
+                u = -u
+            herr = heading_err_deg(math.atan2(u[1], u[0]), a.heading)
+            assert herr <= 5.0, f"{drawn.layout} agent {k}: heading {herr:.1f}° off the drawn tail"
+            n_agents += 1
+        # obstacles and regions: the JSON circle / box covers the drawn label
+        # (regions to the pixel grid: 1.5 px measured max excursion 1.12 px)
+        for o in drawn.obstacles:
+            cx, cy = world_to_px(cfg.world, cfg.img_size, *o.c)
+            assert lab[int(round(cy)), int(round(cx))] == C_OBST, f"{drawn.layout}: obstacle centre off its label"
+        for side, cls in ((0, C_START), (1, C_GOAL)):
+            ys, xs = np.nonzero(lab == cls)
+            inside = np.zeros(len(xs), bool)
+            for g in drawn.groups:
+                reg = g[side]
+                x0, y0 = world_to_px(cfg.world, cfg.img_size, reg.x0, reg.y1)
+                x1, y1 = world_to_px(cfg.world, cfg.img_size, reg.x1, reg.y0)
+                assert x1 - x0 > 20 and y1 - y0 > 20, f"{drawn.layout}: degenerate region {reg}"
+                inside |= (xs >= x0 - 1.5) & (xs <= x1 + 1.5) & (ys >= y0 - 1.5) & (ys <= y1 + 1.5)
+            assert inside.all(), f"{drawn.layout}: region label outside its JSON box"
+    assert n_agents >= 20
+
+
+@test
+def test_sketch_instance_targets_align():
+    """Heat targets rendered from the sketch JSON peak on agent-labelled pixels
+    (the tail starts at the drawn centre), at 512 and at 256: the sub-pixel peak
+    is within 1 px of an agent pixel's centre (rounding it to the pixel grid can
+    land on the neighbour of a 4 px tail)."""
+    cfg = Config()
+    world = _world(cfg)
+    for drawn, lab, _ in _sketch_scenes(cfg):
+        for size in (512, 256):
+            heat, dirs, mask = instance_targets(drawn, world, size)
+            ay, ax = np.nonzero(_downsample(lab, size) == C_AGENT)
+            for k, a in enumerate(drawn.agents):
+                cx, cy = world_to_px(cfg.world, size, *a.pos)
+                iy, ix = int(round(cy)), int(round(cx))
+                assert heat[0, iy, ix] == 1.0
+                d = float(np.hypot(ax - cx, ay - cy).min())
+                assert d <= 1.0, f"{drawn.layout} @{size}: heat peak of agent {k} {d:.2f} px from agent pixels"
+                assert abs(math.atan2(dirs[1, iy, ix], dirs[0, iy, ix]) - a.heading) < 1e-5
+
+
+@test
+def test_extract_on_sketch_labels():
+    """Extraction on sketch ground-truth labels with ground-truth heat and
+    direction maps: every agent within 1.0 unit and 10°, obstacle count exact."""
+    cfg = Config()
+    world = _world(cfg)
+    for size in (512, 256):
+        for drawn, lab, _ in _sketch_scenes(cfg):
+            heat, dirs, _ = instance_targets(drawn, world, size)
+            p = extract(_downsample(lab, size), world, heat=heat[0], dir=dirs)
+            assert p is not None, f"{drawn.layout} @{size}: parse failed"
+            pairs = _match(drawn, p, tol=1.0)
+            assert len(pairs) == len(drawn.agents) == len(p.scene.agents), \
+                f"{drawn.layout} @{size}: {len(pairs)} of {len(drawn.agents)} agents matched"
+            for gi, pi in pairs:
+                err = heading_err_deg(p.scene.agents[pi].heading, drawn.agents[gi].heading)
+                assert err < 10.0, f"{drawn.layout} @{size}: heading error {err:.1f}°"
+            assert len(p.scene.obstacles) == len(drawn.obstacles), \
+                f"{drawn.layout} @{size}: {len(p.scene.obstacles)} obstacles vs {len(drawn.obstacles)}"
+
+
+@test
+def test_wall_lines_like_generated():
+    """wall_mode="lines": walls come back as a few straight, axis-parallel centre
+    lines with the generator's thickness, close to the scene's own, with every
+    doorway still open; the parse runs in the simulator and re-renders like a
+    generated scene. On default-renderer labels (21 scenes) and on hand-drawn
+    sketch labels (7 scenes), at 512 and 256.
+
+    The error is measured on interior walls away from obstacles: a wall drawn
+    under an obstacle is not in the label map at all, and one half-covered by
+    an obstacle shifts its visible half by up to ~0.6 units."""
+    def visible_err(gt, pr, obstacles):
+        def keep(pts):
+            return np.array([all(math.dist(q, o.c) > o.r + 1.5 for o in obstacles) for q in pts], bool)
+        a, b = _sample_segments(gt), _sample_segments(pr)
+        a, b = a[keep(a)], b[keep(b)]
+        return 0.5 * (_dist_to_segments(a, pr).mean() + _dist_to_segments(b, gt).mean())
+
+    from metrics import _dist_to_segments, _sample_segments
+    from reachability import is_solvable
+    from runconfig import ExtractConfig
+    from viz import render_clean
+    cfg = Config()
+    world = _world(cfg)
+    ecfg = ExtractConfig(wall_mode="lines")
+    boundary = set(boundary_walls(cfg.world))
+    # (style, scenes, per-scene bound, median bound), units; measured medians 0.10 / 0.15
+    # (render 512 / 256) and 0.27 / 0.28 (sketch), where the pen wobble itself is ~0.5
+    sets = [("render", [(s, lab) for s, lab in _roundtrip_scenes(cfg)], 0.5, 0.2),
+            ("sketch", [(d, lab) for d, lab, _ in _sketch_scenes(cfg)], 1.0, 0.4)]
+    for style, items, tol, tol_median in sets:
+        for size in (512, 256):
+            errs = []
+            for s, lab in items:
+                heat, dirs, _ = instance_targets(s, world, size)
+                p = extract(_downsample(lab, size), world, heat=heat[0], dir=dirs, ecfg=ecfg)
+                tag = f"{style} {s.layout} @{size}"
+                assert p.world["wall_thickness"] == cfg.wall_thickness, tag
+                assert set(p.scene.walls[:4]) == boundary, f"{tag}: boundary walls not exact"
+                inner = p.scene.walls[4:]
+                assert all(a[0] == b[0] or a[1] == b[1] for a, b in inner), f"{tag}: wall off-axis"
+                assert abs(len(p.scene.walls) - len(s.walls)) <= 1, \
+                    f"{tag}: {len(p.scene.walls)} wall segments for {len(s.walls)}"
+                if s.walls[4:]:
+                    err = visible_err(s.walls[4:], inner, s.obstacles)
+                    assert err < tol, f"{tag}: interior wall line error {err:.2f}"
+                    errs.append(err)
+                assert is_solvable(cfg, p.scene), f"{tag}: a doorway was closed"
+            assert np.median(errs) < tol_median, f"{style} @{size}: median wall line error {np.median(errs):.2f}"
+    sim = Simulator(p.scene, sim_config(cfg, p))
+    assert sim.cfg.wall_thickness == cfg.wall_thickness
+    sim.reset()
+    for _ in range(5):
+        sim.step(np.stack([greedy_action(sim, i) for i in range(len(sim.pos))]))
+    img = render_clean(p)
+    assert np.asarray(img).shape == (p.size, p.size, 3)
 
 
 def main():

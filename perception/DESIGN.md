@@ -364,6 +364,12 @@ interior mislabelling in §1.1 harmless.
 A corridor scene yields ≈ 8–20 segments; `Simulator` is vectorised over
 segments, so cost is not a concern.
 
+**Alternative, `wall_mode="lines"`** (added 29 Sep 2026 for hand-drawn input,
+`walllines.py`, DESIGN_SKETCH §5): straight wall *centre lines* with the
+generator's `wall_thickness`, so the parse has the generator's form (4–12
+axis-parallel segments; `viz.render_clean` re-draws it with `render.render`).
+The surface mode stays the default, so E5 results are unchanged.
+
 ### 4.4 Regions and groups
 
 1. Each of `labels == C_START` and `labels == C_GOAL` is closed with a
@@ -405,7 +411,8 @@ All geometric errors are in world units; angles in degrees. Per scene:
 | obstacles | `obst_precision`, `obst_recall`, `obst_count_ok`, `obst_center_err`, `obst_radius_err` | matching tolerance 2.0 |
 | regions | `region_iou` (mean over GT regions), `region_count_ok`, `group_pairing_ok` | |
 | walls | `wall_iou` | raster IoU of wall class |
-| | `wall_surface_err` | mean distance from sampled points on parsed wall edges to the GT wall surface (distance transform of the 512 GT wall mask), and the reverse direction; reported as the symmetric mean |
+| | `wall_surface_err` | mean distance from sampled points on parsed wall edges to the GT wall surface (distance transform of the 512 GT wall mask), and the reverse direction; reported as the symmetric mean. For centre-line parses the parsed surface is the outline of their capsules |
+| | `wall_line_err` | centre-line parses only (`wall_mode="lines"`, else NaN): symmetric mean distance between parsed and JSON wall centre lines, sampled every 0.5 units |
 | scene | `parse_fail` | extractor returned `None` |
 | | `scene_usable` | not failed ∧ all agents matched ∧ obstacle count ok ∧ pairing ok — "the policy could be run in this parse" |
 
@@ -524,6 +531,7 @@ perception/
 ├── predict.py             load_checkpoint, Predictor (any image size → labels/heat/dir),
 │                          CLI for a directory or a single image (writes JSON + overlay)
 ├── extract.py             label map (+heat/dir) → Parsed; sim_config; parsed_to_json
+├── walllines.py           wall mask → straight centre lines (extract's wall_mode="lines")
 ├── metrics.py             per-scene metrics, matching, aggregation, spacing bins
 ├── evaluate.py            CLI: checkpoint × test dirs → metrics.json, per_scene.csv, figures
 ├── sweep.py               E5 grid, sequential resumable runner, sweep_status.csv
@@ -610,7 +618,7 @@ def estimate_headings(agent_mask, centers, r_px, lw_px, hlen_px) -> (thetas, unc
 def extract_obstacles(obst_mask, wall_mask, scale, world, ecfg) -> list[Obstacle]
 def extract_walls(wall_mask, scale, world, ecfg) -> list[Segment]
 def extract_regions(start_mask, goal_mask, scale, world, ecfg) -> list[(Region, Region)]
-def sim_config(base_cfg) -> Config               # base_cfg.merged(wall_thickness=0.0)
+def sim_config(base_cfg, parsed=None) -> Config   # the parse's wall_thickness (0 for surfaces)
 def parsed_to_json(parsed, sid=None) -> dict;   def parsed_from_json(d) -> Parsed
 
 # metrics.py

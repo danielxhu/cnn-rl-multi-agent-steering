@@ -6,7 +6,9 @@
 
 A directory that holds no scenes itself but sub-directories that do (for
 example ``data/test_spacing/gap*``) expands to one test set per sub-directory,
-named ``test_spacing/gap1.0``.
+named ``test_spacing/gap1.0``. A set whose name is already taken is qualified
+with its parent (``data/test`` and ``data/real_sketch/test`` -> ``test`` and
+``real_sketch/test``).
 
 Outputs, next to the checkpoint unless ``--out`` is given (DESIGN.md §3.4, §5):
     metrics.json     one block per test set: overall, per layout, spacing curve
@@ -29,6 +31,7 @@ from pathlib import Path
 import numpy as np
 
 import _paths  # noqa: F401
+from config import CLASS_NAMES
 from data import SceneDataset, scene_files
 from extract import extract
 from metrics import AGENT_KEYS, SCENE_KEYS, aggregate, scene_metrics
@@ -51,7 +54,15 @@ def expand_data_dirs(dirs) -> list:
         if not subs:
             raise FileNotFoundError(f"no scenes under {d}")
         out.extend((f"{d.name}/{s.name}", s) for s in subs)
-    return out
+    # two sets with one name (data/test and data/real_sketch/test) would overwrite each
+    # other's block in metrics.json: qualify the later ones with their parent directory
+    names, unique = set(), []
+    for name, path in out:
+        if name in names:
+            name = f"{path.parent.name}/{name}"
+        names.add(name)
+        unique.append((name, path))
+    return unique
 
 
 def _safe(name: str) -> str:
@@ -63,11 +74,18 @@ def example_indices(n: int, k: int) -> list:
     return list(range(0, n, max(1, n // max(1, k))))[:k] if n and k else []
 
 
+# metrics computed from the label map; NaN on sets whose labels are not traced from
+# the image (ingested photos, DESIGN_SKETCH §5), so no table can average them in
+LABEL_MAP_KEYS = ["pixacc", *[f"iou_{n}" for n in CLASS_NAMES], "miou", "wall_iou", "wall_surface_err"]
+
+
 def score_scene(ds: SceneDataset, i: int, pred: dict, ecfg, name: str):
     """Extract + score one prediction -> (scene row, agent rows)."""
     parsed = extract(pred["labels"], ds.worlds[i], pred.get("heat"), pred.get("dir"), ecfg)
     m, ar = scene_metrics(ds.scenes[i], ds.labels512(i), parsed, pred["labels"], ds.worlds[i],
                           ds.size, sid=ds.ids[i])
+    if not ds.labels_exact:
+        m.update({k: math.nan for k in LABEL_MAP_KEYS})
     for r in ar:
         r["set"] = name
     return {"set": name, "scene": ds.ids[i], "layout": ds.layouts[i], **m}, ar
@@ -164,6 +182,10 @@ def evaluate(ckpt, data_dirs, out_dir=None, figures=True, limit=None, device=Non
         agg = aggregate(rows, arows)
         agg["seconds"] = time.time() - t0
         agg["path"] = str(path)
+        if not ds.labels_exact:
+            agg["note"] = ("labels rendered from the scene JSON, not traced from the photo: "
+                           "pixel metrics and wall_surface_err are not meaningful (NaN)")
+            print(f"{name}: {agg['note']}")
         metrics[name] = agg
         metrics["_meta"]["sets"].append(name)
         all_rows.extend(rows)

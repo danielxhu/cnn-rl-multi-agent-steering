@@ -3,8 +3,12 @@
     python predict.py --ckpt runs/dev_s256/ckpt_best.pt --image data/test/scene_00007.png --out parsed/
     python predict.py --ckpt runs/dev_s256/ckpt_best.pt --dir data/test --out parsed/ --limit 20
 
+    python predict.py --ckpt runs/sketch/ckpt_best.pt --image IMG_0042.jpg --photo --wall-mode lines
+
 Writes ``<stem>.json`` (``extract.parsed_to_json``) and ``<stem>_overlay.png``
-per image.  The checkpoint carries its ``RunConfig``, so the resolution,
+per image; with ``wall_mode="lines"`` also ``<stem>_clean.png``, the parse
+re-drawn by the generator's renderer. ``--photo``: the inputs are phone
+photos of drawing sheets, rectified first (``rectify.py``).  The checkpoint carries its ``RunConfig``, so the resolution,
 architecture and extractor thresholds are always the run's own; the world
 block (size, agent radius, ...) is the training set's, stored at save time.
 
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +29,7 @@ import torch
 
 import _paths  # noqa: F401
 from config import Config
-from data import load_image, resize_image
+from data import SCENE_PREFIXES, load_image, resize_image
 from extract import extract, parsed_to_json
 from model import build_model
 from runconfig import RunConfig
@@ -144,21 +149,43 @@ def main(argv=None):
     p.add_argument("--out", default="parsed", help="output directory for JSON + overlays")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--device", default=None)
+    p.add_argument("--photo", action="store_true",
+                   help="inputs are photos of drawing sheets: rectify them first (--dir takes jpg/png)")
+    p.add_argument("--wall-mode", choices=["surface", "lines"], default=None,
+                   help="override the run's extraction: lines = straight centre lines, "
+                        "plus <name>_clean.png, the parse re-drawn by the generator's renderer")
     a = p.parse_args(argv)
     if not a.image and not a.dir:
         p.error("give --image or --dir")
 
-    from viz import draw_parsed
+    from viz import draw_parsed, render_clean
     pr = Predictor(a.ckpt, a.device)
-    paths = [Path(a.image)] if a.image else sorted(
-        q for q in Path(a.dir).glob("scene_*.png") if not q.stem.endswith("_labels"))
+    if a.wall_mode:
+        pr.ecfg = replace(pr.ecfg, wall_mode=a.wall_mode)
+    if a.image:
+        paths = [Path(a.image)]
+    elif a.photo:
+        paths = sorted(q for q in Path(a.dir).iterdir() if q.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    else:
+        paths = sorted(q for pre in SCENE_PREFIXES for q in Path(a.dir).glob(f"{pre}*.png")
+                       if not q.stem.endswith("_labels"))
     if a.limit:
         paths = paths[:a.limit]
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     n_fail = 0
     for q in paths:
-        img = load_image(q, pr.size)
+        if a.photo:
+            from rectify import RectifyError, load_photo, rectify
+            try:
+                world_img, _ = rectify(load_photo(q))
+            except RectifyError as e:
+                print(f"REJECTED  {q.name}: {e}")
+                n_fail += 1
+                continue
+            img = resize_image(world_img, pr.size)
+        else:
+            img = load_image(q, pr.size)
         pred, parsed = pr.parse(img)
         if parsed is None:
             n_fail += 1
@@ -166,6 +193,8 @@ def main(argv=None):
         else:
             rec = parsed_to_json(parsed, q.stem)
             draw_parsed(img, parsed).save(out / f"{q.stem}_overlay.png")
+            if parsed.world.get("wall_thickness", 0.0) > 0:      # centre lines: a clean re-rendering
+                render_clean(parsed).save(out / f"{q.stem}_clean.png")
         with open(out / f"{q.stem}.json", "w") as fh:
             json.dump(rec, fh, indent=1)
     print(f"parsed {len(paths)} image(s) -> {out}  ({n_fail} parse failures)")
