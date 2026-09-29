@@ -29,6 +29,13 @@ class RectifyError(RuntimeError):
     pass
 
 
+def load_photo(path) -> np.ndarray:
+    """A photo file as RGB uint8, turned upright by the EXIF orientation tag phones write."""
+    from PIL import Image, ImageOps
+    with Image.open(path) as im:
+        return np.asarray(ImageOps.exif_transpose(im).convert("RGB"), np.uint8)
+
+
 def _odd(n: float) -> int:
     n = int(n)
     return n + 1 if n % 2 == 0 else n

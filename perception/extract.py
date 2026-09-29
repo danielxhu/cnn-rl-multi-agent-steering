@@ -20,8 +20,11 @@ Measured rendering facts the detectors rely on (512 px, from ``sim/render.py``):
 
 Invariants:
 - ``extract`` is a pure function of its inputs (no RNG, no global state).
-- Parsed walls are *surface* polygon edges with ``wall_thickness = 0``;
-  build the simulator with ``sim_config(base_cfg)``, never the generator's config.
+- With ``wall_mode="surface"`` (default) parsed walls are *surface* polygon
+  edges with ``wall_thickness = 0``; with ``wall_mode="lines"`` they are
+  straight centre lines (``walllines.py``) with the world's own wall
+  thickness, like a generated scene. Build the simulator with
+  ``sim_config(base_cfg, parsed)``, never the generator's config as is.
 - ``extract`` returns ``None`` (parse failure) only when there is no start–goal
   pair or no agent; everything else comes back with ``diagnostics``.
 """
@@ -38,6 +41,7 @@ from config import C_AGENT, C_GOAL, C_OBST, C_START, C_WALL, Config, StyleConfig
 from runconfig import ExtractConfig
 from scene import Agent, Obstacle, Region, Scene
 from targets import px_to_world, world_to_px
+from walllines import wall_lines
 
 _STYLE = StyleConfig()
 REF_SIZE = 512                              # resolution the label line width is defined at
@@ -579,7 +583,12 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
 
     # --- static geometry --------------------------------------------------
     obstacles = extract_obstacles(obst_mask, wall_mask, scale, world, ecfg)
-    walls = extract_walls(wall_mask, scale, world, ecfg)
+    if ecfg.wall_mode == "lines":
+        walls = wall_lines(wall_mask, obst_mask, world, ecfg)
+    elif ecfg.wall_mode == "surface":
+        walls = extract_walls(wall_mask, scale, world, ecfg)
+    else:
+        raise ValueError(f"unknown wall_mode {ecfg.wall_mode!r}")
 
     # --- assemble -------------------------------------------------------
     agents = []
@@ -593,7 +602,7 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
                   layout="parsed", groups=list(pairs))
     pw = dict(world)
     pw["img_size"] = S
-    pw["wall_thickness"] = 0.0
+    pw["wall_thickness"] = float(world["wall_thickness"]) if ecfg.wall_mode == "lines" else 0.0
     return Parsed(scene=scene, size=S, world=pw, diagnostics=diag)
 
 
@@ -606,9 +615,11 @@ def _group_of(p, pairs) -> int:
 
 # ------------------------------------------------------------------ config
 
-def sim_config(base_cfg: Config) -> Config:
-    """Simulator config for parsed scenes: surface walls have no thickness."""
-    return base_cfg.merged(wall_thickness=0.0)
+def sim_config(base_cfg: Config, parsed: "Parsed | None" = None) -> Config:
+    """Simulator config for a parsed scene: its own wall thickness (0 for
+    surface walls, the generator's for centre lines); 0 when no parse is given."""
+    thickness = float(parsed.world.get("wall_thickness", 0.0)) if parsed is not None else 0.0
+    return base_cfg.merged(wall_thickness=thickness)
 
 
 def parsed_to_json(parsed: Parsed, sid=None) -> dict:
@@ -618,7 +629,7 @@ def parsed_to_json(parsed: Parsed, sid=None) -> dict:
     d["parsed"] = True
     w = parsed.world
     d["world"] = {"size": w["size"], "img_size": parsed.size, "agent_radius": w["agent_radius"],
-                  "wall_thickness": 0.0, "fov_deg": w.get("fov_deg", Config().fov_deg),
+                  "wall_thickness": float(w.get("wall_thickness", 0.0)), "fov_deg": w.get("fov_deg", Config().fov_deg),
                   "fov_range": w.get("fov_range", Config().fov_range)}
     d["diagnostics"] = parsed.diagnostics
     return d

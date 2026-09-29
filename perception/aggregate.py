@@ -36,7 +36,12 @@ TABLE_METRICS = [("agent_f1", "F1", "{:.3f}"), ("agent_center_err", "cerr", "{:.
 SIZE_COLORS = {128: "#4C72B0", 256: "#DD8452", 512: "#55A868"}
 
 
-def _aug_of(train_name: str):
+def _aug_of(train_name):
+    """Augmentation level of a training set; a mix of sets keeps its names (sketch+aug3)."""
+    if isinstance(train_name, (list, tuple)):
+        if len(train_name) != 1:
+            return "+".join(re.sub(r"^train_", "", str(t)) for t in train_name)
+        train_name = train_name[0]
     m = re.search(r"aug(\d+)", train_name or "")
     return int(m.group(1)) if m else (train_name or "?")
 

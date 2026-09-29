@@ -7,7 +7,9 @@
 Python rather than a shell script so it runs unchanged on Windows.  Up to
 ``--jobs`` ``generate.py`` processes run in parallel, one per dataset.  The
 table below is the specification: every set is ``--layout mixed`` and 512 px;
-the 128 / 256 conditions come from downsampling at load time.  ``agent_gap``
+the 128 / 256 conditions come from downsampling at load time.  The three
+``*_sketch`` sets use the hand-drawn renderer (``generate.py --style sketch``,
+DESIGN_SKETCH §4); ``--only '*sketch*'`` makes just those.  ``agent_gap``
 is not a ``generate.py`` flag, so each spacing set gets a one-line JSON config.
 """
 from __future__ import annotations
@@ -51,7 +53,13 @@ DATASETS = [
     for k, g in enumerate(GAPS)
 ] + [
     ("test_dense", 300, ["--layout", "mixed", "--agents", "12-16", "--obstacles", "2-4", "--seed", "500"]),
+] + [
+    # hand-drawn style (DESIGN_SKETCH §4); the jitter flags do not apply to it
+    ("train_sketch", 5000, BASE + ["--style", "sketch", "--seed", "110"]),
+    ("val_sketch", 500, BASE + ["--style", "sketch", "--seed", "210"]),
+    ("test_sketch", 1000, BASE + ["--style", "sketch", "--seed", "310"]),
 ]
+SKETCH_COST = 2.0            # a sketch scene costs about twice a rendered one
 
 
 def gap_configs(data_root: Path) -> list:
@@ -82,9 +90,16 @@ def commands(data_root: Path, sim_dir: Path, n_scale: float = 1.0, python=None) 
     return out
 
 
+def cost(cmd: list) -> float:
+    """Relative run time of one generate.py command (scene count x style cost)."""
+    n = int(cmd[cmd.index("--n") + 1])
+    return n * (SKETCH_COST if "sketch" in cmd else 1.0)
+
+
 def run_all(cmds: list, jobs: int, quiet: bool = True) -> int:
-    """Run the commands with up to `jobs` concurrent processes; return the number of failures."""
-    pending = list(cmds)
+    """Run the commands with up to `jobs` concurrent processes, longest first
+    (so the 5000-scene sketch set does not start last); return the number of failures."""
+    pending = sorted(cmds, key=lambda nc: -cost(nc[1]))
     running = []
     failed = 0
     t0 = time.time()

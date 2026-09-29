@@ -15,6 +15,11 @@ Invariants:
   decoded once at construction and ``num_workers`` must be 0.
 - ``scenes[i]``, ``worlds[i]``, ``ids[i]`` and ``layouts[i]`` are the ground
   truth for sample ``i`` so evaluation can reach it by index.
+- ``labels_exact`` is False for ingested photos (``dataset.json``): their label
+  PNGs are rendered from the JSON, not traced from the photo.
+- Several training sets are joined with ``concat_datasets`` (a plain
+  ``ConcatDataset``, picklable); they must share one world. Their class
+  frequencies are combined by pixel counts from each set's own cache.
 """
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 import _paths  # noqa: F401
 from config import N_CLASSES, Config
@@ -67,6 +72,16 @@ def load_labels(path, size: int) -> np.ndarray:
     return resize_labels(arr, size)
 
 
+def labels_exact(root: Path) -> bool:
+    """False for sets whose label PNGs are only rendered from the JSON so the
+    loader works (ingested photos): pixel metrics are then meaningless."""
+    p = root / "dataset.json"
+    if not p.exists():
+        return True
+    with open(p) as fh:
+        return bool(json.load(fh).get("labels_exact", True))
+
+
 def world_from_manifest(root: Path) -> dict | None:
     """The `world` block a scene JSON would carry, from dataset.json's config."""
     p = root / "dataset.json"
@@ -81,10 +96,13 @@ def world_from_manifest(root: Path) -> dict | None:
             "fov_deg": c["fov_deg"], "fov_range": c["fov_range"]}
 
 
+SCENE_PREFIXES = ("scene_", "real_")           # generated scenes; ingested photos (DESIGN_SKETCH §5)
+
+
 def scene_files(root: Path) -> list:
-    """Sorted scene stems (`scene_00001`) that have image, labels and JSON."""
+    """Sorted scene stems (`scene_00001`, `real_0001`) that have image, labels and JSON."""
     stems = []
-    for p in sorted(root.glob("scene_*.json")):
+    for p in sorted(q for pre in SCENE_PREFIXES for q in root.glob(f"{pre}*.json")):
         stem = p.stem
         if (root / f"{stem}.png").exists() and (root / f"{stem}_labels.png").exists():
             stems.append(stem)
@@ -104,6 +122,7 @@ class SceneDataset(Dataset):
             raise FileNotFoundError(f"dataset directory not found: {self.root}")
 
         default_world = world_from_manifest(self.root)
+        self.labels_exact = labels_exact(self.root)
         self.ids, self.scenes, self.worlds, self.layouts = [], [], [], []
         for stem in scene_files(self.root):
             with open(self.root / f"{stem}.json") as fh:
@@ -193,10 +212,27 @@ class SceneDataset(Dataset):
 
 # ----------------------------------------------------------------- loaders
 
-def make_loader(ds: SceneDataset, batch: int, shuffle: bool, num_workers: int,
+def parts_of(ds) -> list:
+    """The SceneDatasets behind `ds` (itself, or the members of a concatenation)."""
+    return list(ds.datasets) if isinstance(ds, ConcatDataset) else [ds]
+
+
+def concat_datasets(datasets: list):
+    """One training set from several; a single set is returned unchanged."""
+    if len(datasets) == 1:
+        return datasets[0]
+    ref = {k: datasets[0].worlds[0][k] for k in ("size", "agent_radius", "img_size")}
+    for d in datasets[1:]:
+        w = {k: d.worlds[0][k] for k in ref}
+        if w != ref:
+            raise ValueError(f"{d.root}: world {w} differs from {datasets[0].root}: {ref}")
+    return ConcatDataset(datasets)
+
+
+def make_loader(ds, batch: int, shuffle: bool, num_workers: int,
                 seed: int = 0, drop_last: bool = False) -> DataLoader:
     """Spawn-safe DataLoader; RAM-cached datasets never fork workers."""
-    if ds.cache:
+    if any(d.cache for d in parts_of(ds)):
         num_workers = 0
     gen = torch.Generator()
     gen.manual_seed(int(seed))
@@ -207,12 +243,18 @@ def make_loader(ds: SceneDataset, batch: int, shuffle: bool, num_workers: int,
     )
 
 
-def class_frequencies(ds: SceneDataset) -> np.ndarray:
+def class_frequencies(ds) -> np.ndarray:
     """Fraction of pixels per class over the whole set; cached in <root>/class_freq.json.
 
     Frequencies depend on the working resolution (thin classes shrink when
-    downsampled), so the cache is keyed by size.
+    downsampled), so the cache is keyed by size. For a concatenation, each
+    member's frequencies (cached per root) are combined by pixel counts.
     """
+    parts = parts_of(ds)
+    if len(parts) > 1:
+        pix = np.array([len(d) * d.size * d.size for d in parts], np.float64)
+        freqs = np.stack([class_frequencies(d) for d in parts])
+        return (freqs * pix[:, None]).sum(0) / pix.sum()
     key = str(ds.size)
     cache_path = ds.root / "class_freq.json"
     cached = {}

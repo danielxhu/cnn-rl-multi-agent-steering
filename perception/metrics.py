@@ -35,7 +35,7 @@ SCENE_KEYS = [
     "agent_center_err", "heading_err_deg",
     "obst_precision", "obst_recall", "obst_count_ok", "obst_center_err", "obst_radius_err",
     "region_iou", "region_count_ok", "group_pairing_ok",
-    "wall_iou", "wall_surface_err", "scene_usable",
+    "wall_iou", "wall_surface_err", "wall_line_err", "scene_usable",
     "n_agents", "n_pred_agents", "n_obstacles", "n_pred_obstacles",
 ]
 AGENT_KEYS = ["scene", "layout", "agent", "d_nn", "matched", "center_err", "heading_err", "score"]
@@ -122,14 +122,22 @@ def _pairs_of(scene) -> list:
 
 # ------------------------------------------------------------------ walls
 
-def rasterise_walls(walls, world_size: float, size: int) -> np.ndarray:
+def rasterise_walls(walls, world_size: float, size: int, thickness: float = 0.0) -> np.ndarray:
+    """Parsed wall *surface* pixels: the segments themselves for surface walls
+    (thickness 0), the outline of their capsules for centre lines."""
     m = np.zeros((size, size), np.uint8)
+    w = int(round(thickness * size / world_size))
     for (ax, ay), (bx, by) in walls:
         p0 = world_to_px(world_size, size, ax, ay)
         p1 = world_to_px(world_size, size, bx, by)
-        cv2.line(m, (int(round(p0[0])), int(round(p0[1]))),
-                 (int(round(p1[0])), int(round(p1[1]))), 1, 1)
-    return m
+        a, b = (int(round(p0[0])), int(round(p0[1]))), (int(round(p1[0])), int(round(p1[1])))
+        if w > 1:
+            cv2.line(m, a, b, 1, w)
+            cv2.circle(m, a, w // 2, 1, -1)
+            cv2.circle(m, b, w // 2, 1, -1)
+        else:
+            cv2.line(m, a, b, 1, 1)
+    return surface_of_mask(m) if w > 1 else m
 
 
 def surface_of_mask(mask: np.ndarray) -> np.ndarray:
@@ -148,11 +156,12 @@ def _mean_distance(from_mask: np.ndarray, to_mask: np.ndarray) -> float:
     return float(dt[from_mask > 0].mean())
 
 
-def wall_surface_error(gt_wall_mask512: np.ndarray, parsed_walls, world_size: float) -> float:
-    """Symmetric mean distance (world units) between parsed wall edges and the GT wall surface."""
+def wall_surface_error(gt_wall_mask512: np.ndarray, parsed_walls, world_size: float,
+                       thickness: float = 0.0) -> float:
+    """Symmetric mean distance (world units) between parsed wall surfaces and the GT wall surface."""
     S = gt_wall_mask512.shape[0]
     gt_surf = surface_of_mask(gt_wall_mask512)
-    pr_surf = rasterise_walls(parsed_walls, world_size, S)
+    pr_surf = rasterise_walls(parsed_walls, world_size, S, thickness)
     if not gt_surf.any() and not pr_surf.any():
         return 0.0
     fwd = _mean_distance(pr_surf, gt_surf)
@@ -161,6 +170,35 @@ def wall_surface_error(gt_wall_mask512: np.ndarray, parsed_walls, world_size: fl
     if not vals:
         return NAN
     return float(np.mean(vals)) / (S / world_size)
+
+
+def _sample_segments(walls, step: float = 0.5) -> np.ndarray:
+    pts = []
+    for a, b in walls:
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        n = max(2, int(np.linalg.norm(b - a) / step) + 1)
+        pts.append(a + np.linspace(0, 1, n)[:, None] * (b - a))
+    return np.vstack(pts) if pts else np.zeros((0, 2))
+
+
+def _dist_to_segments(pts: np.ndarray, walls) -> np.ndarray:
+    d = np.full(len(pts), np.inf)
+    for a, b in walls:
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        ab = b - a
+        t = np.clip((pts - a) @ ab / max(float(ab @ ab), 1e-12), 0, 1)
+        d = np.minimum(d, np.linalg.norm(pts - (a + t[:, None] * ab), axis=1))
+    return d
+
+
+def wall_line_error(gt_walls, parsed_walls) -> float:
+    """Symmetric mean distance (world units) between parsed wall centre lines
+    and the ground-truth centre lines (``wall_mode="lines"`` parses only)."""
+    if not gt_walls or not parsed_walls:
+        return NAN
+    fwd = _dist_to_segments(_sample_segments(parsed_walls), gt_walls).mean()
+    rev = _dist_to_segments(_sample_segments(gt_walls), parsed_walls).mean()
+    return float((fwd + rev) / 2)
 
 
 # ------------------------------------------------------------------ scene
@@ -248,8 +286,11 @@ def scene_metrics(gt_scene, gt_labels512, parsed, pred_labels, world, size, sid=
     m["group_pairing_ok"] = float(pairing_ok)
 
     # --- walls -------------------------------------------------------------
+    thickness = float(parsed.world.get("wall_thickness", 0.0))
     if gt_labels512 is not None:
-        m["wall_surface_err"] = wall_surface_error(gt_labels512 == C_WALL, ps.walls, W)
+        m["wall_surface_err"] = wall_surface_error(gt_labels512 == C_WALL, ps.walls, W, thickness)
+    if thickness > 0:                                    # centre lines: compare with the JSON's
+        m["wall_line_err"] = wall_line_error(gt_scene.walls, ps.walls)
 
     m["scene_usable"] = float(len(pairs) == len(gt_pos) == len(pred_pos)
                               and m["obst_count_ok"] == 1.0 and pairing_ok)

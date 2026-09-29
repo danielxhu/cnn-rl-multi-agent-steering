@@ -14,6 +14,10 @@ Invariants:
   built from a JSON file that omits fields added later.
 - ``from_namespace`` only overrides a field when the flag was given (``None``
   means "keep the default"), so ``--config base.json`` plus flags composes.
+- ``DataConfig.train`` is a string for one training set and a list for
+  several; a one-element ``--train`` stays a string, so configs written
+  before lists existed and configs written now read the same way. Read it
+  through ``train_dirs``.
 - Batch and AMP defaults are resolved by ``default_batch`` / ``resolve_amp``
   at run time, not stored, so a config stays portable between machines.
 """
@@ -34,7 +38,7 @@ DEFAULT_BATCH = {128: 16, 256: 8, 512: 4}
 @dataclass
 class DataConfig:
     root: str = "data"
-    train: str = "train_aug2"
+    train: str | list = "train_aug2"       # one set, or several concatenated (DESIGN_SKETCH §5)
     val: str = "val"
     size: int = 256
     num_workers: int = 4
@@ -74,6 +78,16 @@ class ExtractConfig:
     poly_eps_px: float = 1.5
     min_wall_area_px: int = 25
     min_region_area_px: int = 100
+    # walls: "surface" = polygon edges of the wall mask, thickness 0 (E5);
+    # "lines" = straight centre lines with the generator's thickness (walllines.py)
+    wall_mode: str = "surface"
+    line_tol: float = 1.5                  # Douglas-Peucker tolerance, world units
+    line_min_len: float = 2.0              # shorter pieces are dropped
+    line_join: float = 4.0                 # collinear gaps closed / corners snapped within this
+    line_overshoot: float = 6.0            # a hand-drawn corner may run this far past its end
+    line_axis_deg: float = 10.0            # walls this close to an axis become axis-parallel; 0 = off
+    line_border: float = 3.0               # skeleton this close to the edge is the boundary band
+    line_border_reach: float = 4.5         # ends this close to the edge are extended onto it
 
 
 @dataclass
@@ -128,6 +142,8 @@ class RunConfig:
                 v = getattr(ns, f.name, None)
                 if v is not None:
                     setattr(sub, f.name, v)
+        if isinstance(cfg.data.train, (list, tuple)):
+            cfg.data.train = cfg.data.train[0] if len(cfg.data.train) == 1 else list(cfg.data.train)
         if getattr(ns, "cache", None) is not None:
             cfg.data.cache = ns.cache == "ram"
         if getattr(ns, "out", None):
@@ -143,6 +159,11 @@ class RunConfig:
 def _from_dict(cls, d: dict):
     known = {f.name for f in fields(cls)}
     return cls(**{k: v for k, v in d.items() if k in known})
+
+
+def train_dirs(dcfg: DataConfig) -> list:
+    """The training set names as a list, whether the config holds one or several."""
+    return [dcfg.train] if isinstance(dcfg.train, str) else list(dcfg.train)
 
 
 def default_batch(size: int, override: int | None = None) -> int:
@@ -185,7 +206,8 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
 
     g = p.add_argument_group("data")
     g.add_argument("--data-root", dest="root", default=None)
-    g.add_argument("--train", default=None, help="training set, relative to --data-root")
+    g.add_argument("--train", nargs="+", default=None,
+                   help="training set(s), relative to --data-root; several are concatenated")
     g.add_argument("--val", default=None, help="validation set, relative to --data-root")
     g.add_argument("--size", type=int, default=None, choices=SIZES)
     g.add_argument("--num-workers", dest="num_workers", type=int, default=None)
@@ -221,4 +243,8 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
     g.add_argument("--poly-eps-px", dest="poly_eps_px", type=float, default=None)
     g.add_argument("--min-wall-area-px", dest="min_wall_area_px", type=int, default=None)
     g.add_argument("--min-region-area-px", dest="min_region_area_px", type=int, default=None)
+    g.add_argument("--wall-mode", dest="wall_mode", choices=["surface", "lines"], default=None,
+                   help="lines: straight wall centre lines like a generated scene (for sketches)")
+    g.add_argument("--line-tol", dest="line_tol", type=float, default=None)
+    g.add_argument("--line-join", dest="line_join", type=float, default=None)
     return p
