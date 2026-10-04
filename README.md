@@ -36,10 +36,11 @@ Generality comes from the observation. Each agent sees 16 field-of-view sectors 
 
 | Path | Contents |
 |---|---|
-| [`sim/`](sim/) | Scene generator and multi-agent simulator: seven layout families, pixel-exact label maps, JSON ground truth, configuration-space validation, 13 unit tests. See [`sim/README.md`](sim/README.md). |
+| [`sim/`](sim/) | Scene generator and multi-agent simulator: seven layout families, pixel-exact label maps, JSON ground truth, configuration-space validation, 15 unit tests. See [`sim/README.md`](sim/README.md). |
+| [`perception/`](perception/) | Full-scale perception: U-Net pixel classifier and geometry extraction trained on `sim/` output, E5 sweep and results, hand-drawn input. See [`perception/README.md`](perception/README.md). |
 | [`pilot/`](pilot/) | Earlier end-to-end pilot (128 × 128, single agent): U-Net perception, PPO policy, evaluation and figures. See [`pilot/README.md`](pilot/README.md). |
-| [`Detailed Proposal.docx`](Detailed%20Proposal.docx) | Full project proposal: approach, infrastructure, experiment plan and compute estimate. |
-| [`docs/`](docs/) | Figures used in this README. |
+| [`docs/proposal.pdf`](docs/proposal.pdf) | Full project proposal: approach, infrastructure, experiment plan and compute estimate. |
+| [`docs/`](docs/) | The proposal and figures used in this README. |
 | [`requirements.txt`](requirements.txt) | Python dependencies for `sim/` and `pilot/`. |
 
 ## Scene generator
@@ -87,6 +88,16 @@ Policy (PPO, 100 episodes per condition) against a go-straight baseline. "Policy
 
 End-to-end evaluation: the policy acts inside the parsed scene, so perception errors propagate, and the resulting trajectory is checked against the ground-truth scene. An oracle condition (policy on ground-truth geometry) separates the cost of perception from the cost of the policy. On the zero-shot corridor, success is 66% through the full pipeline and 82% with oracle geometry, with no parse failures.
 
+## Status
+
+| Stage | Status | Notes |
+|---|---|---|
+| Scene generator (`sim/`) | Done | 7 layout families, 15 tests |
+| Pilot (`pilot/`) | Done | Results above |
+| Full-scale perception (`perception/`) | Nearly done | U-Net + geometry extraction on `sim/` output; hand-drawn input in progress |
+| E5, perception robustness | Mostly done | Agent F1 ≥ 0.999 at 128 / 256 / 512 px on the clean test set; under heavy augmentation, a 256 px model trained without augmentation keeps only 56% of scenes usable, versus 100% when trained with it. 512 px instance-head runs pending |
+| E1–E4 | Planned | Policy-side experiments |
+
 ## Planned experiments
 
 The proposal lays out five experiment families on the `sim/` suite:
@@ -114,7 +125,7 @@ Generate scenes and run the generator's tests:
 cd sim
 python generate.py --n 7 --layout mixed --preview 7 --out data/preview   # one scene per layout
 python generate.py --n 3000 --layout mixed --agents 3-8 --obstacles 2-6 --seed 0 --out data/train
-python tests/run_tests.py                                                # 13 tests, ~20 s
+python tests/run_tests.py                                                # 15 tests, ~20 s
 ```
 
 Reproduce the pilot (about 25 minutes on a laptop CPU, no GPU needed):
@@ -134,4 +145,4 @@ python end_to_end.py        # image -> path figures and pipeline-vs-oracle metri
 
 ## License
 
-Copyright © 2026 Daniel Hu. All rights reserved. The code is published for reference and reproducibility. If you would like to use it, please open an issue.
+[MIT](LICENSE) © 2026 Daniel Hu
