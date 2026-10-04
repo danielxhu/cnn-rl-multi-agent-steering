@@ -17,7 +17,7 @@ python generate.py --n 3000 --layout mixed --agents 3-8 --obstacles 2-6 --seed 0
 
 ```bash
 python generate.py --n 7 --layout mixed --preview 7 --out data/preview   # one scene per layout
-python tests/run_tests.py                                                # 13 tests, ~20 s
+python tests/run_tests.py                                                # 15 tests, ~20 s
 ```
 
 No system Python? `uv run --python 3.12 --with numpy --with opencv-python-headless --with pillow python generate.py ...`
