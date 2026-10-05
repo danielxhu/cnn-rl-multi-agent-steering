@@ -66,14 +66,14 @@ def page_mask(gray: np.ndarray):
     return cv2.erode(mask, np.ones((edge, edge), np.uint8))
 
 
-def binarise(photo: np.ndarray) -> np.ndarray:
+def binarise(photo: np.ndarray, use_page_mask: bool = True) -> np.ndarray:
     """Ink = 255, inside the page only. Illumination is divided out first so
     shadows do not become ink."""
     gray = cv2.cvtColor(photo, cv2.COLOR_RGB2GRAY) if photo.ndim == 3 else photo
     k = _odd(max(gray.shape) / 12)
     bg = cv2.GaussianBlur(cv2.dilate(gray, np.ones((15, 15), np.uint8)), (k, k), 0)
     flat = cv2.divide(gray, np.maximum(bg, 1), scale=255)
-    mask = page_mask(gray)
+    mask = page_mask(gray) if use_page_mask else None
     if mask is not None:
         flat = np.where(mask > 0, flat, 255).astype(np.uint8)
     _, bw = cv2.threshold(flat, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -205,7 +205,15 @@ def rectify(photo: np.ndarray, out: int = 512):
     """(world image (out, out, 3) uint8, info dict)."""
     photo = np.asarray(photo)
     bw = binarise(photo)
-    markers = find_markers(bw)
+    try:
+        markers = find_markers(bw)
+    except RectifyError:
+        # The page mask keeps the largest bright region. On an image cropped close
+        # to the sheet (a scan, a tablet drawing) that is the inside of the frame,
+        # and the corner markers outside it get masked away: retry on the whole
+        # image. The frame check in find_markers still rejects a wrong set.
+        bw = binarise(photo, use_page_mask=False)
+        markers = find_markers(bw)
     H = page_homography(markers)
     M = world_square_matrix(out) @ H
     img = cv2.warpPerspective(photo, M, (out, out), flags=cv2.INTER_AREA,

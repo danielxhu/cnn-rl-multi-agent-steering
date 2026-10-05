@@ -391,3 +391,14 @@ them; sections that state a changed number were updated too.
   simulator runs with thickness 3, and `render_clean` draws it.
 - Also: `predict.py --photo` (rectify first), `--wall-mode`, reads `real_*`;
   `rectify.load_photo` (EXIF-upright) moved there from `ingest_photos.py`.
+
+**Rectification fallback (5 Oct 2026)**
+
+- §2 step 2 (page mask) failed on an image cropped close to the sheet (a
+  tablet drawing on the drawing-sheet PDF, 950 × 920 px): the largest bright
+  region was the inside of the frame, not the paper around it, so the corner
+  markers were masked away (`0 candidates`). `rectify` now retries marker
+  finding on the unmasked image when the masked search fails; the frame check
+  of step 4 still guards against a wrong set. Phone photos of the whole page
+  take the first path as before (`test_rectify_recovers_sheet_and_id`
+  unchanged and passing).
