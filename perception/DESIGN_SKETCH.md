@@ -460,3 +460,37 @@ them; sections that state a changed number were updated too.
   the sketch checks on v1, v2 and v3.
 - Datasets `train_sketch3` / `val_sketch3` / `test_sketch3` (seeds 130 / 230 /
   330); 4.9 scenes/s on one core.
+
+**Sketch style v4 and free-form layouts (6 Oct 2026)**
+
+- Concern raised: agents drawn at any size, pens of inconsistent width, and
+  layouts nobody planned. The seven families all keep start left / goal right
+  (except crossing) and axis-parallel walls, so a model can learn "the left
+  box is the start" and nothing about a diagonal wall.
+- `sim/layouts.py` adds two free-form families, **not** in `LAYOUTS` (so
+  `--layout mixed` and every dataset made with it are unchanged): `walls` (0–6
+  random walls, 75 % axis-parallel and 25 % diagonal, 35 % attached to the
+  boundary, no near-parallel slivers) and `rooms` (one or two walls with 1–2
+  doors, 2–4 rooms). Both put the start and goal boxes anywhere, either way
+  round (one side 10–16, the other 12–40), ≥ 35 units apart and off the walls.
+  `MIXES["mixed2"]` (`generate.py --layout mixed2`) cycles the seven families
+  plus 3 × walls and 2 × rooms (~40 % free-form). 30 / 30 scenes valid per
+  family in a check; ~0.05–0.08 s per scene.
+- `sketch.SKETCH_V4` (`--style sketch4`) = v3 plus one drawn agent size per
+  drawing, 0.6–2 × the agent radius, each agent ± 15 % around it and capped at
+  0.42 × its nearest neighbour's distance (no overlapping circles), tails 1.6–
+  2.8 drawn radii; and every element (each wall, region box, obstacle, agent,
+  letter, the hatching) with its own pen width, 0.55–1.7 × the drawing's pen.
+  v1, v2 and v3 stay pixel-identical (hashes before / after).
+- Checks on 140 v4 scenes over `mixed2`: heat-target and extraction checks
+  pass; JSON ↔ drawing passes the circle-fit bound for every agent; 2 of ~800
+  agents exceed a secondary pixel measure (raw centroid 4.9 px on a large ring;
+  a 5.4° heading on a short tail). The test's centre bound is now 1.25 px
+  (0.25 units; per-element widths make the label ring vary more), scaling with
+  the drawn ring, and its heading bound scales with the drawn tail.
+- Tests: `test_free_layouts_are_valid_and_varied` (sim: solvable, boxes off the
+  walls, start boxes spread ≥ 30 units in x, `mixed` unchanged); v4
+  determinism; the perception sketch checks run on v1–v4, v4 including the
+  free-form families.
+- Datasets `train_sketch4` / `val_sketch4` / `test_sketch4` (seeds 140 / 240 /
+  340, `--layout mixed2`); metrics per layout include `walls` and `rooms`.

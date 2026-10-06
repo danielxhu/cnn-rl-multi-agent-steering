@@ -17,7 +17,7 @@ python generate.py --n 3000 --layout mixed --agents 3-8 --obstacles 2-6 --seed 0
 
 ```bash
 python generate.py --n 7 --layout mixed --preview 7 --out data/preview   # one scene per layout
-python tests/run_tests.py                                                # 15 tests, ~20 s
+python tests/run_tests.py                                                # 16 tests, ~20 s
 ```
 
 No system Python? `uv run --python 3.12 --with numpy --with opencv-python-headless --with pillow python generate.py ...`
@@ -81,6 +81,14 @@ drawn; it follows from the agent pose and the constants in `dataset.json`.
 | `two_doorway` | one wall, two gaps of unequal width | choosing a passage |
 | `cul_de_sac` | two gaps, one into a sealed pocket | trap and exit look identical from outside |
 | `crossing` | two perpendicular corridors, two agent groups | agent-to-agent avoidance |
+
+Two free-form families are outside this list, so `--layout mixed` never
+changes; `--layout mixed2` adds them (~40 % of scenes):
+
+| Layout | Geometry | Tests |
+|---|---|---|
+| `walls` | 0–6 random walls, some diagonal or attached to the boundary; start / goal anywhere | layouts nobody planned |
+| `rooms` | one or two walls with doors, 2–4 rooms; start and goal in different rooms | finding the door |
 
 Every scene is validated before it is written: start must reach goal for a
 disk of the agent's radius, and the narrowest passage must exceed

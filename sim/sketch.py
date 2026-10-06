@@ -47,7 +47,10 @@ Invariants:
   v2 trial still missed: S / G in many hands (eight Hershey faces, italic,
   and procedural pen-stroke letters, all sheared, stretched and elastically
   warped), a harsher camera (noise, blur, JPEG, shadow, low resolution,
-  gamma), pen dropouts and stray marks. The same rule holds: v1 and v2 stay
+  gamma), pen dropouts and stray marks. ``SKETCH_V4`` (``--style sketch4``)
+  adds agents drawn at one size per drawing from 0.6x to 2x (each varying a
+  little, never overlapping a neighbour; tails scale with them) and a separate
+  pen width for every element. The same rule holds: v1, v2 and v3 stay
   pixel-identical.
 """
 from __future__ import annotations
@@ -147,6 +150,12 @@ class SketchStyle:
     stray_prob: float = 0.0                     # short stray marks, labelled background
     stray_count: tuple = (1, 4)
 
+    # --- v4 options (defaults off; see SKETCH_V4) ---
+    agent_scale: tuple | None = None            # one drawn agent size per drawing, x agent radius
+    agent_scale_jitter: float = 0.15            # each agent around it, +/-
+    agent_tail: tuple = (1.6, 2.8)              # tail length in drawn radii (with agent_scale)
+    element_width: tuple | None = None          # every element's own pen width, x the pen
+
 
 SKETCH_V2 = SketchStyle(
     pen_width=(2.0, 5.0), digital_prob=0.35,
@@ -158,7 +167,8 @@ SKETCH_V3 = replace(
     SKETCH_V2, letter_variety=True, letter_scale=(0.4, 1.0), harsh_camera=True,
     dropout_prob=0.35, stray_prob=0.4,
 )
-STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2, "sketch3": SKETCH_V3}
+SKETCH_V4 = replace(SKETCH_V3, agent_scale=(0.6, 2.0), element_width=(0.55, 1.7))
+STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2, "sketch3": SKETCH_V3, "sketch4": SKETCH_V4}
 
 
 # --------------------------------------------------------------- primitives
@@ -491,10 +501,13 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         paper = np.clip(np.array(st.paper, float) + rng.uniform(*st.paper_jitter, 3), 0, 255)
         mk = rng.uniform(*st.pen_width) * k
 
+    # v4: every element its own pen (drawn only when on, so v1-v3 keep their stream)
+    ew = (lambda: rng.uniform(*st.element_width)) if st.element_width else (lambda: 1.0)
+
     dead = _dead_mask(cfg, scene, n) if fill_unreachable else None
     hatch = []
     if dead is not None and rng.random() < st.hatch_prob:
-        hatch = _hatch_strokes(dead, rng, st, k, mk)
+        hatch = _hatch_strokes(dead, rng, st, k, mk * ew())
     else:
         dead = None                                    # blank dead space is background
 
@@ -507,8 +520,9 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
             a, b = P(reg.x0, reg.y1), P(reg.x1, reg.y0)
             quad = np.array([[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]])
             quad = quad + rng.normal(0, st.region_corner_sigma * k, (4, 2))
+            mr = mk * ew()
             sides = [_stroke(_wobbly_line(quad[i], quad[(i + 1) % 4], rng, 1.3 * k, st.region_overshoot),
-                             rng, mk * 0.6, st.width_var) for i in range(4)]
+                             rng, mr * 0.6, st.width_var) for i in range(4)]
             regions.append(DrawnRegion(quad, sides, cls, ch, group=gi))
 
     boundary = {tuple(map(tuple, s)) for s in boundary_walls(cfg.world)}
@@ -517,7 +531,7 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         if (tuple(a), tuple(b)) in boundary:
             continue                                   # printed, drawn crisp in `draw`
         pts = _wobbly_line(P(*a), P(*b), rng, rng.uniform(*st.wall_wobble) * k, st.wall_overshoot)
-        w = mk * rng.uniform(*st.wall_width_mult)
+        w = mk * ew() * rng.uniform(*st.wall_width_mult)
         walls.append((_stroke(pts, rng, w, st.width_var), (a, b)))
 
     obstacles = []
@@ -525,36 +539,49 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         c, r = P(*o.c), o.r * cfg.scale
         stretch = st.stretch if st.obstacle_stretch is None else st.obstacle_stretch
         poly, _ = _wobbly_closed(c, r, rng, st.obstacle_wobble, stretch)
-        outline = _stroke(np.vstack([poly, poly[:2]]), rng, mk * 0.7, st.width_var)
+        mo = mk * ew()
+        outline = _stroke(np.vstack([poly, poly[:2]]), rng, mo * 0.7, st.width_var)
         solid = rng.random() < st.solid_fill_prob
         scr, over = [], 0.0
         if not solid:
             R = float(np.linalg.norm(poly - c, axis=1).max())
             kind = rng.random() if (st.sparse_fill_prob or st.zigzag_fill_prob) else 1.0
             if kind < st.sparse_fill_prob:
-                scr = _scribble_strokes(c, R, rng, st, k, mk, spacing=st.sparse_spacing, width=0.6)
+                scr = _scribble_strokes(c, R, rng, st, k, mo, spacing=st.sparse_spacing, width=0.6)
             elif kind < st.sparse_fill_prob + st.zigzag_fill_prob:
-                scr = _zigzag_stroke(c, R, rng, st, k, mk)
+                scr = _zigzag_stroke(c, R, rng, st, k, mo)
             else:
-                scr = _scribble_strokes(c, R, rng, st, k, mk)
+                scr = _scribble_strokes(c, R, rng, st, k, mo)
             if st.fill_overshoot[1] > 0:
                 over = rng.uniform(*st.fill_overshoot) * k
         obstacles.append(DrawnObstacle(poly, outline, solid, scr, over))
 
     agents = []
     r0 = cfg.agent_radius * cfg.scale
-    for ag in scene.agents:
+    centres = np.array([P(*ag.pos) for ag in scene.agents]) if scene.agents else np.zeros((0, 2))
+    size = rng.uniform(*st.agent_scale) if st.agent_scale else None
+    for i, ag in enumerate(scene.agents):
         c = P(*ag.pos)
-        ring_pts, th = _wobbly_closed(c, r0 * rng.uniform(*st.agent_radius_mult), rng,
-                                      st.agent_wobble, st.stretch,
+        if size is None:
+            ra = r0 * rng.uniform(*st.agent_radius_mult)
+        else:                                          # v4: one size per drawer, no overlaps
+            ra = r0 * size * rng.uniform(1 - st.agent_scale_jitter, 1 + st.agent_scale_jitter)
+            others = np.delete(centres, i, axis=0)
+            if len(others):
+                ra = min(ra, 0.42 * float(np.linalg.norm(others - c, axis=1).min()))
+        ring_pts, th = _wobbly_closed(c, ra, rng, st.agent_wobble, st.stretch,
                                       close=rng.uniform(*st.agent_close), drift=0.1)
         turn = int(np.searchsorted(th - th[0], 2 * math.pi, side="right"))
         c = _area_centroid(ring_pts[: max(3, turn)])   # the tail starts at the drawn circle's centre
-        L = cfg.style.heading_len_mult * r0 * rng.uniform(*st.tail_mult)
+        if size is None:
+            L = cfg.style.heading_len_mult * r0 * rng.uniform(*st.tail_mult)
+        else:
+            L = ra * rng.uniform(*st.agent_tail)
         h = ag.heading + rng.normal(0, st.heading_sigma)
         tip = c + L * np.array([math.cos(h), -math.sin(h)])
-        agents.append(DrawnAgent(_stroke(ring_pts, rng, mk * 0.6, st.width_var), turn,
-                                 _stroke(_wobbly_line(c, tip, rng, 0.8 * k, anchored=True), rng, mk * 0.6, st.width_var),
+        ma = mk * ew()
+        agents.append(DrawnAgent(_stroke(ring_pts, rng, ma * 0.6, st.width_var), turn,
+                                 _stroke(_wobbly_line(c, tip, rng, 0.8 * k, anchored=True), rng, ma * 0.6, st.width_var),
                                  c, tip))
 
     for reg in regions:                                # letters last: they avoid the drawn agents
@@ -563,7 +590,7 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         reg.letter_h = min(st.letter_height_frac * min(x1 - x0, y1 - y0), st.letter_max_px * k)
         reg.letter_h *= rng.uniform(*st.letter_scale)
         if st.letter_in_pen:
-            reg.letter_th = max(1, int(round(mk * 0.7)))
+            reg.letter_th = max(1, int(round(mk * ew() * 0.7)))
         if st.letter_variety:
             reg.letter_form = _letter_form(reg.letter, rng, st)
         reg.letter_centre = tuple(_letter_spot(reg.quad, reg.letter_h, agents, k)

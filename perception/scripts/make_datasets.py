@@ -11,7 +11,8 @@ the 128 / 256 conditions come from downsampling at load time.  The three
 ``*_sketch`` sets use the hand-drawn renderer (``generate.py --style sketch``,
 DESIGN_SKETCH §4); ``--only '*sketch*'`` makes just those; the ``*_sketch2`` sets use the widened
 style (``--style sketch2``) and ``--only '*sketch2'`` makes only them; likewise
-``*_sketch3`` (``--style sketch3``) and ``--only '*sketch3'``.  ``agent_gap``
+``*_sketch3`` (``--style sketch3``) and ``--only '*sketch3'``, and ``*_sketch4``
+(``--style sketch4`` on ``--layout mixed2``, which adds free-form layouts).  ``agent_gap``
 is not a ``generate.py`` flag, so each spacing set gets a one-line JSON config.
 """
 from __future__ import annotations
@@ -28,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import _paths  # noqa: E402,F401
 
 BASE = ["--layout", "mixed", "--agents", "1-8", "--obstacles", "0-6"]
+BASE2 = ["--layout", "mixed2", "--agents", "1-8", "--obstacles", "0-6"]   # + free-form layouts
 AUG = {
     0: [],
     1: ["--jitter-color", "10", "--jitter-line-width", "0.5", "--jitter-background", "8",
@@ -68,6 +70,10 @@ DATASETS = [
     ("train_sketch3", 5000, BASE + ["--style", "sketch3", "--seed", "130"]),
     ("val_sketch3", 500, BASE + ["--style", "sketch3", "--seed", "230"]),
     ("test_sketch3", 1000, BASE + ["--style", "sketch3", "--seed", "330"]),
+    # v4: agents 0.6-2x, a pen per element, and ~40 % free-form layouts (walls / rooms)
+    ("train_sketch4", 5000, BASE2 + ["--style", "sketch4", "--seed", "140"]),
+    ("val_sketch4", 500, BASE2 + ["--style", "sketch4", "--seed", "240"]),
+    ("test_sketch4", 1000, BASE2 + ["--style", "sketch4", "--seed", "340"]),
 ]
 SKETCH_COST = 2.0            # a sketch scene costs about twice a rendered one
 

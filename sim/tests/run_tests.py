@@ -249,8 +249,8 @@ def test_sketch_is_deterministic():
 
     # the widened style (v2) is deterministic too, and its digital medium has no camera
     from dataclasses import replace
-    from sketch import SKETCH_V2, SKETCH_V3
-    for st in (SKETCH_V2, SKETCH_V3):
+    from sketch import SKETCH_V2, SKETCH_V3, SKETCH_V4
+    for st in (SKETCH_V2, SKETCH_V3, SKETCH_V4):
         a = sketch(s, cfg, style=st)
         b = sketch(s, cfg, style=st)
         assert np.array_equal(np.asarray(a[0]), np.asarray(b[0])) and np.array_equal(a[1], b[1])
@@ -278,6 +278,29 @@ def test_sketch_labels_contain_every_class():
     assert (lab == 1).mean() > 0.2, "hatched dead space must be labelled wall"
     _, lab_blank, _ = sketch_mod.sketch(s, cfg, style=sketch_mod.SketchStyle(hatch_prob=0.0))
     assert (lab_blank == 1).mean() < 0.1, "blank dead space must stay background"
+
+
+@test
+def test_free_layouts_are_valid_and_varied():
+    """walls / rooms (not in LAYOUTS): solvable, start and goal boxes off the
+    walls and in varied places, so no 'start is on the left' shortcut."""
+    from layouts import FREE_LAYOUTS, MIXES
+    cfg = Config()
+    rng = np.random.default_rng(5)
+    assert MIXES["mixed"] == LAYOUTS, "the old mix must not change"
+    for name in FREE_LAYOUTS:
+        starts_x = []
+        for _ in range(8):
+            s = random_scene(rng, cfg, layout=name, n_agents=4, n_obstacles=2)
+            assert s is not None, f"{name}: sampler gave up"
+            assert is_solvable(cfg, s), name
+            for reg in (s.start_region, s.goal_region):
+                for a, b in s.walls[4:]:
+                    for t in np.linspace(0, 1, 50):
+                        q = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+                        assert reg.distance_to(q) > cfg.wall_half, f"{name}: a wall runs through a region"
+            starts_x.append(s.start_region.center[0])
+        assert np.ptp(starts_x) > 30, f"{name}: start boxes always in the same place"
 
 
 def main():

@@ -233,6 +233,10 @@ python predict.py --ckpt runs/sketch_s256_inst_s0/ckpt_best.pt --image IMG_0042.
   harsher camera, pen dropouts and stray marks. Train or predict with
   `--region-by-agents` so a box holding agents is a start even when its letter
   is misread.
+- **Style v4** (`--style sketch4`, sets `*_sketch4` on `--layout mixed2`) adds
+  agents drawn 0.6–2x, a pen width per element, and free-form layouts (`walls`,
+  `rooms`: random and diagonal walls, start / goal anywhere) — the most robust
+  set; train on it for drawings of unknown style and layout.
 - Look at a few generated scenes before a long run:
   `python ../sim/generate.py --n 7 --style sketch --preview 7 --out data/preview_sketch`.
 

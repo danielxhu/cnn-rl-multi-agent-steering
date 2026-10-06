@@ -28,7 +28,7 @@ import numpy as np
 from PIL import Image
 
 from config import Config, StyleConfig
-from layouts import LAYOUTS, random_scene
+from layouts import BUILDERS, LAYOUTS, MIXES, random_scene
 from render import PALETTE, render
 from sketch import STYLES as SKETCH_STYLES, sketch
 
@@ -60,7 +60,8 @@ def build_parser():
     p.add_argument("--n", type=int, default=100, help="number of scenes")
     p.add_argument("--out", default="data/train", help="output directory")
     p.add_argument("--layout", default="mixed",
-                   help="one of %s, or 'mixed' for an even spread" % ", ".join(LAYOUTS))
+                   help="one of %s, or 'mixed' for an even spread of those; 'mixed2' adds the "
+                        "free-form families walls / rooms (~40 %%)" % ", ".join(BUILDERS))
     p.add_argument("--agents", default="1-6", help="agents per scene, e.g. 3-8 or 4")
     p.add_argument("--obstacles", default="1-4", help="obstacles per scene, e.g. 2-6")
     p.add_argument("--hard-ratio", type=float, default=0.0,
@@ -68,11 +69,12 @@ def build_parser():
     p.add_argument("--size", type=int, default=512, help="image side in pixels")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--config", default=None, help="JSON file overriding any Config field")
-    p.add_argument("--style", default="render", choices=["render", "sketch", "sketch2", "sketch3"],
+    p.add_argument("--style", default="render", choices=["render", "sketch", "sketch2", "sketch3", "sketch4"],
                    help="render: the default renderer; sketch: hand-drawn, one black pen, "
                         "photographed (sketch.py); sketch2: the same widened to tablet drawings, "
                         "thin pens and sparse fills (sketch.SKETCH_V2); sketch3: v2 plus S / G in "
-                        "many hands, a harsher camera, pen dropouts and stray marks (SKETCH_V3). "
+                        "many hands, a harsher camera, pen dropouts and stray marks (SKETCH_V3); sketch4: v3 "
+                        "plus agents 0.6-2x and a pen width per element (SKETCH_V4). "
                         "The jitter flags are ignored for the sketch styles")
 
     g = p.add_argument_group("world")
@@ -121,11 +123,11 @@ def main(argv=None):
     cfg = config_from_args(a)
     n_agents = parse_range(a.agents)
     n_obst = parse_range(a.obstacles)
-    layouts = LAYOUTS if a.layout == "mixed" else [a.layout]
+    layouts = MIXES[a.layout] if a.layout in MIXES else [a.layout]
     for name in layouts:
-        if name not in LAYOUTS:
-            raise SystemExit("unknown layout %r; choose from %s or 'mixed'"
-                             % (name, ", ".join(LAYOUTS)))
+        if name not in BUILDERS:
+            raise SystemExit("unknown layout %r; choose from %s or %s"
+                             % (name, ", ".join(BUILDERS), " / ".join(MIXES)))
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)

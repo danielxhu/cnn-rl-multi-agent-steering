@@ -471,7 +471,7 @@ def test_multi_root_training_set():
 
 _SKETCHES = []
 _SKETCHES_BY_STYLE = {}
-SKETCH_STYLE_NAMES = ("sketch", "sketch2", "sketch3")
+SKETCH_STYLE_NAMES = ("sketch", "sketch2", "sketch3", "sketch4")
 
 
 def _sketch_scenes(cfg, style="sketch"):
@@ -479,9 +479,10 @@ def _sketch_scenes(cfg, style="sketch"):
     tail maps the renderer drew; rendered once per style and cached across tests."""
     cache = _SKETCHES if style == "sketch" else _SKETCHES_BY_STYLE.setdefault(style, [])
     if not cache:
+        from layouts import FREE_LAYOUTS
         from sketch import STYLES, sketch
         rng = np.random.default_rng(77)
-        for k, layout in enumerate(LAYOUTS):
+        for k, layout in enumerate(LAYOUTS + (FREE_LAYOUTS if style == "sketch4" else [])):
             s = random_scene(rng, cfg, layout=layout, n_agents=int(rng.integers(2, 9)),
                              n_obstacles=int(rng.integers(1, 5)))
             assert s is not None, f"{layout}: sampler gave up"
@@ -501,12 +502,17 @@ def _circle_fit(xs, ys):
 @test
 def test_sketch_json_matches_drawing():
     """The written JSON is the drawn geometry (DESIGN_SKETCH §3.1 step 4): every
-    agent centre within 1 px of the centre of its drawn label ring, every heading
+    agent centre within ~1 px of the centre of its drawn label ring, every heading
     within 5° of its drawn label tail, measured on the label strokes themselves.
 
     The ring's centre is measured by a circle fit to its label pixels: the raw
     pixel centroid is pulled up to ~2 px off by the ±35 % pen-pressure width
     variation (one thick side), so it is only held to 2.5 px (DESIGN_SKETCH §8).
+    Style v4 draws agents from 0.6x to 2x, each element with its own pen: the
+    centre bound is 1.25 px (0.25 units; v4's per-element widths make the label
+    ring's width vary more), scaling with the drawn ring (6 % / 25 % of its
+    radius when that is more), and the heading bound scales with the drawn tail
+    (1 px at 0.6 of its length when that is more than 5°).
     """
     cfg = Config()
     n_agents = 0
@@ -517,18 +523,22 @@ def test_sketch_json_matches_drawing():
             cx, cy = world_to_px(cfg.world, cfg.img_size, *a.pos)
             ys, xs = np.nonzero(rings == k + 1)
             fx, fy = _circle_fit(xs.astype(float), ys.astype(float))
+            r_draw = float(np.hypot(xs - fx, ys - fy).mean())
             err = math.hypot(fx - cx, fy - cy)
-            assert err <= 1.0, f"{drawn.layout} agent {k}: JSON centre {err:.2f} px from the drawn ring"
+            assert err <= max(1.25, 0.06 * r_draw), \
+                f"{drawn.layout} agent {k}: JSON centre {err:.2f} px from the drawn ring (r {r_draw:.1f})"
             raw = math.hypot(xs.mean() - cx, ys.mean() - cy)
-            assert raw <= 2.5, f"{drawn.layout} agent {k}: ring pixel centroid {raw:.2f} px away"
+            assert raw <= max(2.5, 0.25 * r_draw), f"{drawn.layout} agent {k}: ring pixel centroid {raw:.2f} px away"
             ty, tx = np.nonzero(tails == k + 1)
+            tail_len = float(np.hypot(tx - cx, ty - cy).max())
             P = np.c_[tx, -ty].astype(float)                    # y up, like the heading
             mu = P.mean(0)
             u = np.linalg.svd(P - mu, full_matrices=False)[2][0]
             if np.dot(u, mu - np.array([cx, -cy])) < 0:
                 u = -u
             herr = heading_err_deg(math.atan2(u[1], u[0]), a.heading)
-            assert herr <= 5.0, f"{drawn.layout} agent {k}: heading {herr:.1f}° off the drawn tail"
+            htol = max(5.0, math.degrees(math.atan2(1.0, 0.6 * tail_len)))
+            assert herr <= htol, f"{drawn.layout} agent {k}: heading {herr:.1f}° off the drawn tail"
             n_agents += 1
         # obstacles and regions: the JSON circle / box covers the drawn label
         # (regions to the pixel grid: 1.5 px measured max excursion 1.12 px)

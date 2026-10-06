@@ -8,6 +8,14 @@
     cul_de_sac    two gaps, one opening into a sealed pocket
     crossing      two perpendicular corridors, two groups of agents
 
+Free-form families, not in LAYOUTS (so ``--layout mixed`` and every dataset made
+with it are unchanged); ``MIXES["mixed2"]`` adds them for robustness to layouts
+nobody planned. Start and goal boxes go anywhere, in any orientation:
+
+    walls         0-6 random walls, mostly axis-parallel, some diagonal,
+                  some attached to the boundary
+    rooms         one or two walls with doors splitting the world into rooms
+
 Every scene is validated before it is returned: start must reach goal for a
 disk of the agent's radius, and the tightest passage must exceed min_bottleneck.
 """
@@ -29,6 +37,10 @@ from reachability import (
 from scene import Agent, Obstacle, Region, Scene, boundary_walls
 
 LAYOUTS = ["open", "corridor", "room", "doorway", "two_doorway", "cul_de_sac", "crossing"]
+FREE_LAYOUTS = ["walls", "rooms"]
+# layout cycles generate.py samples from; "mixed2" is ~40 % free-form
+MIXES = {"mixed": LAYOUTS,
+         "mixed2": LAYOUTS + ["walls", "walls", "walls", "rooms", "rooms"]}
 
 
 @dataclass
@@ -194,6 +206,147 @@ def _crossing(rng, cfg):
     )
 
 
+# ------------------------------------------------------- free-form families
+
+def _box_dims(rng):
+    """A start / goal box: one side 10-16, the other 12-40, either way round."""
+    a, b = rng.uniform(10.0, 16.0), rng.uniform(12.0, 40.0)
+    return (a, b) if rng.random() < 0.5 else (b, a)
+
+
+def _free_pair(rng, cfg, zones=None):
+    """(start, goal) anywhere in the world, apart; `zones` restricts each to a Region."""
+    W, m = cfg.world, _margin(cfg)
+    for _ in range(200):
+        regs = []
+        for k in range(2):
+            z = zones[k] if zones else Region(m, m, W - m, W - m)
+            w, h = _box_dims(rng)
+            w, h = min(w, z.width), min(h, z.height)
+            if w < 10 or h < 10:
+                break
+            x0, y0 = rng.uniform(z.x0, z.x1 - w), rng.uniform(z.y0, z.y1 - h)
+            regs.append(Region(x0, y0, x0 + w, y0 + h))
+        if len(regs) < 2:
+            continue
+        s, g = regs
+        if math.dist(s.center, g.center) < 0.35 * W:
+            continue
+        if not (s.x1 + 8 < g.x0 or g.x1 + 8 < s.x0 or s.y1 + 8 < g.y0 or g.y1 + 8 < s.y0):
+            continue                                   # overlapping or touching
+        return s, g
+    return None
+
+
+def _seg_region_dist(seg, reg, step=0.5) -> float:
+    (ax, ay), (bx, by) = seg
+    n = max(2, int(math.hypot(bx - ax, by - ay) / step))
+    return min(reg.distance_to((ax + (bx - ax) * t, ay + (by - ay) * t)) for t in np.linspace(0, 1, n))
+
+
+def _seg_seg_dist(a, b, step=0.5) -> float:
+    (ax, ay), (bx, by) = a
+    n = max(2, int(math.hypot(bx - ax, by - ay) / step))
+    (cx, cy), (dx, dy) = b
+    best = math.inf
+    for t in np.linspace(0, 1, n):
+        px, py = ax + (bx - ax) * t, ay + (by - ay) * t
+        ex, ey = dx - cx, dy - cy
+        u = max(0.0, min(1.0, ((px - cx) * ex + (py - cy) * ey) / max(ex * ex + ey * ey, 1e-12)))
+        best = min(best, math.hypot(px - cx - u * ex, py - cy - u * ey))
+    return best
+
+
+def _walls(rng, cfg):
+    W = cfg.world
+    pair = _free_pair(rng, cfg)
+    if pair is None:
+        return _open(rng, cfg)
+    s, g = pair
+    keep_off = cfg.wall_half + cfg.region_margin
+    walls, want = [], int(rng.integers(0, 7))
+    for _ in range(80):
+        if len(walls) >= want:
+            break
+        L = rng.uniform(12.0, 55.0)
+        diag = rng.random() < 0.25
+        if rng.random() < 0.35:                        # attached to the boundary, pointing inward
+            edge = int(rng.integers(4))
+            t = rng.uniform(10.0, W - 10.0)
+            a = [(t, 0.0), (W, t), (t, W), (0.0, t)][edge]
+            inward = [math.pi / 2, math.pi, -math.pi / 2, 0.0][edge]
+            ang = inward + (rng.uniform(-0.6, 0.6) if diag else 0.0)
+        else:
+            a = (rng.uniform(8.0, W - 8.0), rng.uniform(8.0, W - 8.0))
+            ang = rng.uniform(0, math.pi) if diag else rng.choice([0.0, math.pi / 2])
+        b = (a[0] + L * math.cos(ang), a[1] + L * math.sin(ang))
+        b = (min(max(b[0], 0.0), W), min(max(b[1], 0.0), W))
+        seg = (a, b)
+        if math.dist(a, b) < 8.0:
+            continue
+        if min(_seg_region_dist(seg, s), _seg_region_dist(seg, g)) < keep_off:
+            continue
+        # no near-miss slivers: another wall is either crossed or well apart
+        if any(2.0 < _seg_seg_dist(seg, w) < 6.0 for w in walls):
+            continue
+        walls.append(seg)
+    m = _margin(cfg)
+    return LayoutSpec(walls=boundary_walls(W) + walls, groups=[(s, g)],
+                      place_zone=Region(m, m, W - m, W - m), name="walls")
+
+
+def _split_wall(axis_x, pos, lo, hi, n_doors, rng):
+    """A wall at x = pos (axis_x) or y = pos from lo to hi, cut by n_doors doors."""
+    span = hi - lo
+    doors = []
+    for _ in range(n_doors):
+        w = rng.uniform(10.0, 16.0)
+        c = rng.uniform(lo + w / 2 + 4, hi - w / 2 - 4) if span > w + 8 else (lo + hi) / 2
+        doors.append((c, w))
+    cuts = sorted((c - w / 2, c + w / 2) for c, w in doors)
+    pieces, y = [], lo
+    for a, b in cuts:
+        if a > y + 1.0:
+            pieces.append((y, a))
+        y = max(y, b)
+    if y < hi - 1.0:
+        pieces.append((y, hi))
+    if axis_x:
+        return [((pos, a), (pos, b)) for a, b in pieces]
+    return [((a, pos), (b, pos)) for a, b in pieces]
+
+
+def _rooms(rng, cfg):
+    W, m = cfg.world, _margin(cfg)
+    mode = rng.choice(["v", "h", "both"])
+    xs = rng.uniform(30.0, 70.0) if mode in ("v", "both") else None
+    ys = rng.uniform(30.0, 70.0) if mode in ("h", "both") else None
+    walls = []
+    if xs is not None:
+        if ys is None:
+            walls += _split_wall(True, xs, 0.0, W, int(rng.integers(1, 3)), rng)
+        else:                                          # two halves meeting the other wall
+            walls += _split_wall(True, xs, 0.0, ys, int(rng.integers(0, 2)) + 1, rng)
+            walls += _split_wall(True, xs, ys, W, int(rng.integers(0, 2)), rng)
+    if ys is not None:
+        if xs is None:
+            walls += _split_wall(False, ys, 0.0, W, int(rng.integers(1, 3)), rng)
+        else:
+            walls += _split_wall(False, ys, 0.0, xs, int(rng.integers(0, 2)) + 1, rng)
+            walls += _split_wall(False, ys, xs, W, int(rng.integers(0, 2)), rng)
+    # rooms as Regions, inset so boxes keep off the walls
+    gx = [0.0] + ([xs] if xs is not None else []) + [W]
+    gy = [0.0] + ([ys] if ys is not None else []) + [W]
+    rooms = [Region(gx[i] + m, gy[j] + m, gx[i + 1] - m, gy[j + 1] - m)
+             for i in range(len(gx) - 1) for j in range(len(gy) - 1)]
+    i, j = rng.choice(len(rooms), 2, replace=False)
+    pair = _free_pair(rng, cfg, zones=(rooms[i], rooms[j]))
+    if pair is None:
+        return _open(rng, cfg)
+    return LayoutSpec(walls=boundary_walls(W) + walls, groups=[pair],
+                      place_zone=Region(m, m, W - m, W - m), name="rooms")
+
+
 BUILDERS = {
     "open": _open,
     "corridor": _corridor,
@@ -202,6 +355,8 @@ BUILDERS = {
     "two_doorway": _two_doorway,
     "cul_de_sac": _cul_de_sac,
     "crossing": _crossing,
+    "walls": _walls,
+    "rooms": _rooms,
 }
 
 
