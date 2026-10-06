@@ -9,7 +9,8 @@ Python rather than a shell script so it runs unchanged on Windows.  Up to
 table below is the specification: every set is ``--layout mixed`` and 512 px;
 the 128 / 256 conditions come from downsampling at load time.  The three
 ``*_sketch`` sets use the hand-drawn renderer (``generate.py --style sketch``,
-DESIGN_SKETCH §4); ``--only '*sketch*'`` makes just those.  ``agent_gap``
+DESIGN_SKETCH §4); ``--only '*sketch*'`` makes just those; the ``*_sketch2`` sets use the widened
+style (``--style sketch2``) and ``--only '*sketch2'`` makes only them.  ``agent_gap``
 is not a ``generate.py`` flag, so each spacing set gets a one-line JSON config.
 """
 from __future__ import annotations
@@ -58,6 +59,10 @@ DATASETS = [
     ("train_sketch", 5000, BASE + ["--style", "sketch", "--seed", "110"]),
     ("val_sketch", 500, BASE + ["--style", "sketch", "--seed", "210"]),
     ("test_sketch", 1000, BASE + ["--style", "sketch", "--seed", "310"]),
+    # widened hand-drawn style after the first real (tablet) drawing, DESIGN_SKETCH §8
+    ("train_sketch2", 5000, BASE + ["--style", "sketch2", "--seed", "120"]),
+    ("val_sketch2", 500, BASE + ["--style", "sketch2", "--seed", "220"]),
+    ("test_sketch2", 1000, BASE + ["--style", "sketch2", "--seed", "320"]),
 ]
 SKETCH_COST = 2.0            # a sketch scene costs about twice a rendered one
 

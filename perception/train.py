@@ -5,6 +5,7 @@
     python train.py ... --instance-head            # variant B
     python train.py ... --train train_sketch train_aug3   # several sets, concatenated
     python train.py ... --resume                   # continue from ckpt_last.pt
+    python train.py ... --init runs/x/ckpt_best.pt --epochs 15   # fine-tune from a trained model
 
 Run directory contents:
     config.json     resolved RunConfig + git hash + argv
@@ -21,7 +22,8 @@ Invariants:
   iteration and expressed in epochs, so it scales with ``--epochs``.
 - ``device`` is resolved once and passed down; nothing calls ``.cuda()``.
 - Resuming restores optimiser, scaler, scheduler and RNG state, so an
-  interruption costs at most one epoch.
+  interruption costs at most one epoch. ``--init`` only loads model weights
+  (fine-tuning); a resumed run ignores it and continues from ckpt_last.pt.
 """
 from __future__ import annotations
 
@@ -202,6 +204,10 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
 
     start_epoch, best = 0, -math.inf
     last = run_dir / "ckpt_last.pt"
+    if tcfg.init and not (resume and last.exists()):
+        rec = torch.load(tcfg.init, map_location="cpu", weights_only=False)
+        model.load_state_dict(rec["model"])          # same arch and heads, or this raises
+        print(f"initialised from {tcfg.init} (epoch {rec.get('epoch')})")
     if resume and last.exists():
         rec = torch.load(last, map_location="cpu", weights_only=False)
         model.load_state_dict(rec["model"])

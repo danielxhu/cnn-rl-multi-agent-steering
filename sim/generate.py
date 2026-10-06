@@ -9,8 +9,9 @@ Each sample is written as three files that share a stem:
     scene_00001_labels.png   palette PNG, pixel value == class index
     scene_00001.json         structured ground truth
 
-`--style sketch` draws the scene hand-drawn instead (sketch.py): the JSON then
-holds the drawn geometry, and the domain-randomisation flags are ignored.
+`--style sketch` / `sketch2` draws the scene hand-drawn instead (sketch.py):
+the JSON then holds the drawn geometry, and the domain-randomisation flags are
+ignored.
 
 plus one `dataset.json` recording the exact configuration, so a run is
 reproducible from the output directory alone.  See README.md for the knobs.
@@ -29,7 +30,7 @@ from PIL import Image
 from config import Config, StyleConfig
 from layouts import LAYOUTS, random_scene
 from render import PALETTE, render
-from sketch import sketch
+from sketch import STYLES as SKETCH_STYLES, sketch
 
 
 def parse_range(text, cast=int):
@@ -67,9 +68,11 @@ def build_parser():
     p.add_argument("--size", type=int, default=512, help="image side in pixels")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--config", default=None, help="JSON file overriding any Config field")
-    p.add_argument("--style", default="render", choices=["render", "sketch"],
+    p.add_argument("--style", default="render", choices=["render", "sketch", "sketch2"],
                    help="render: the default renderer; sketch: hand-drawn, one black pen, "
-                        "photographed (sketch.py; the jitter flags below are ignored)")
+                        "photographed (sketch.py); sketch2: the same widened to tablet drawings, "
+                        "thin pens and sparse fills (sketch.SKETCH_V2). The jitter flags are "
+                        "ignored for both sketch styles")
 
     g = p.add_argument_group("world")
     g.add_argument("--world", type=float, default=None, help="world side, world units")
@@ -142,12 +145,13 @@ def main(argv=None):
             continue
         scene.seed = int(rng.integers(2 ** 31))
         sid = "scene_%05d" % (len(index) + 1)
-        if a.style == "sketch":
+        if a.style in SKETCH_STYLES:
             # own rng from the scene seed: the drawing is reproducible from it
             img, lab, drawn = sketch(scene, cfg, rng=np.random.default_rng(scene.seed),
-                                     fill_unreachable=not a.no_fill_unreachable)
+                                     fill_unreachable=not a.no_fill_unreachable,
+                                     style=SKETCH_STYLES[a.style])
             rec = drawn.as_dict(cfg, sid)             # what was drawn, not what was sampled
-            rec["style"] = "sketch"
+            rec["style"] = a.style
         else:
             img, lab = render(scene, cfg, rng=rng,
                               fill_unreachable=not a.no_fill_unreachable)

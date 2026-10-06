@@ -225,6 +225,10 @@ python predict.py --ckpt runs/sketch_s256_inst_s0/ckpt_best.pt --image IMG_0042.
 - On `real_sketch/test` the label PNGs are rendered from the JSON only so the
   loader works; `evaluate.py` reports its pixel metrics and wall surface error
   as NaN. Agent, obstacle, region and `scene_usable` metrics are real.
+- **Style v2** (`--style sketch2`, sets `*_sketch2`) adds tablet drawings, thin
+  pens and sparse / zigzag obstacle fills. Fine-tune an existing sketch model on
+  it instead of training from scratch:
+  `python train.py --data-root data --train train_sketch2 train_aug3 --val val_sketch2 --size 256 --instance-head --wall-mode lines --init runs/sketch_s256_inst_seed0/ckpt_best.pt --epochs 15 --lr 3e-4 --out runs/sketch2_ft_seed0`
 - Look at a few generated scenes before a long run:
   `python ../sim/generate.py --n 7 --style sketch --preview 7 --out data/preview_sketch`.
 

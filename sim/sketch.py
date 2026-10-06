@@ -36,6 +36,14 @@ Invariants:
 - Same scene and rng seed -> identical image, labels and scene. Re-rendering a
   written sketch JSON does *not* reproduce the image: that JSON is already
   the perturbed geometry.
+- ``SketchStyle()`` is the first style (v1, ``generate.py --style sketch``),
+  pixel-identical to the datasets made with it. ``SKETCH_V2``
+  (``--style sketch2``) widens it after the first real drawing (DESIGN_SKETCH
+  §8): a "digital" medium (tablet drawing: white, no photo effects), thinner
+  pens, sparse-hatch and zigzag obstacle fills, elongated obstacles, region
+  boxes drawn past their corners, smaller letters in the pen's own width. Its
+  extra random draws only happen when those options are on, which is what
+  keeps v1 unchanged.
 """
 from __future__ import annotations
 
@@ -94,6 +102,31 @@ class SketchStyle:
 
     label_extra_agent: int = 3                  # label strokes wider than the ink, as in render.py
     label_extra_wall: int = 2
+
+    # --- v2 options (defaults reproduce v1 exactly; see SKETCH_V2) ---
+    digital_prob: float = 0.0                   # tablet drawing instead of a photographed page
+    digital_pen_width: tuple = (1.2, 3.5)
+    digital_ink: tuple = (0.0, 30.0)
+    digital_paper_drop: tuple = (0.0, 4.0)      # white minus this, per channel
+    digital_blur: tuple = (0.0, 0.5)
+    sparse_fill_prob: float = 0.0               # of the non-solid obstacles: sparse hatch ...
+    zigzag_fill_prob: float = 0.0               # ... or one back-and-forth scribble; else dense
+    sparse_spacing: tuple = (7.0, 14.0)
+    zigzag_spacing: tuple = (5.0, 10.0)
+    fill_overshoot: tuple = (0.0, 0.0)          # px a non-solid fill may cross the outline
+    obstacle_stretch: float | None = None       # None: `stretch`
+    region_overshoot: float = 0.03              # region sides drawn past the corners
+    letter_scale: tuple = (0.8, 1.0)            # of the largest letter that fits
+    letter_in_pen: bool = False                 # letter stroke = the pen's width, not h / 12
+
+
+SKETCH_V2 = SketchStyle(
+    pen_width=(2.0, 5.0), digital_prob=0.35,
+    sparse_fill_prob=0.30, zigzag_fill_prob=0.15, fill_overshoot=(0.0, 3.0),
+    obstacle_stretch=0.22, agent_radius_mult=(0.7, 1.3), region_overshoot=0.10,
+    letter_scale=(0.55, 1.0), letter_in_pen=True,
+)
+STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2}
 
 
 # --------------------------------------------------------------- primitives
@@ -169,6 +202,7 @@ class DrawnObstacle:
     outline: Stroke
     solid: bool
     scribble: list = field(default_factory=list)  # [Stroke], clipped to the poly when drawn
+    overshoot: float = 0.0                       # px the scribble may cross the outline
 
 
 @dataclass
@@ -190,6 +224,7 @@ class DrawnRegion:
     letter_h: float = 0.0
     letter_rot: float = 0.0
     group: int = 0
+    letter_th: int = 0                           # stroke width; 0: h / 12
 
 
 @dataclass
@@ -209,6 +244,7 @@ class Drawing:
     printed_ink: tuple = (18, 18, 18)
     label_extra_wall: int = 2
     label_extra_agent: int = 3
+    digital: bool = False                        # tablet drawing: no photo effects
 
 
 # ----------------------------------------------------------------- perturb
@@ -243,20 +279,39 @@ def _hatch_strokes(dead, rng, st, k, mk):
     return out
 
 
-def _scribble_strokes(c, R, rng, st, k, mk):
+def _scribble_strokes(c, R, rng, st, k, mk, spacing=None, width=0.8):
     """Parallel strokes at a random angle covering the whole disk of radius R
     around c (the fix for the prototype's white wedge: the strokes are laid out
     in a frame rotated with them, so every offset across the disk is covered)."""
     ang = rng.uniform(0, math.pi)
     d = np.array([math.cos(ang), math.sin(ang)])
     nrm = np.array([-d[1], d[0]])
-    step = rng.uniform(*st.scribble_spacing) * k
+    step = rng.uniform(*(spacing or st.scribble_spacing)) * k
     out = []
     for off in np.arange(-R + rng.uniform(0, step), R, step):
         half = math.sqrt(max(R * R - off * off, 0.0)) + 2 * k
         a, b = c + off * nrm - half * d, c + off * nrm + half * d
-        out.append(_stroke(_wobbly_line(a, b, rng, 1.2 * k, step=3.0 * k), rng, mk * 0.8, st.width_var))
+        out.append(_stroke(_wobbly_line(a, b, rng, 1.2 * k, step=3.0 * k), rng, mk * width, st.width_var))
     return out
+
+
+def _zigzag_stroke(c, R, rng, st, k, mk):
+    """One continuous back-and-forth scribble over the disk of radius R."""
+    ang = rng.uniform(0, math.pi)
+    d = np.array([math.cos(ang), math.sin(ang)])
+    nrm = np.array([-d[1], d[0]])
+    step = rng.uniform(*st.zigzag_spacing) * k
+    pts, side = [], 1.0
+    for off in np.arange(-R + rng.uniform(0, step), R, step):
+        half = math.sqrt(max(R * R - off * off, 0.0)) * rng.uniform(0.75, 1.0)
+        pts.append(c + off * nrm + side * half * d)
+        side = -side
+    if len(pts) < 2:
+        return []
+    pts = np.array(pts) + rng.normal(0, 1.0 * k, (len(pts), 2))
+    dense = np.concatenate([np.linspace(a, b, max(2, int(np.linalg.norm(b - a) / (3 * k))),
+                                        endpoint=False) for a, b in zip(pts[:-1], pts[1:])] + [pts[-1:]])
+    return [_stroke(dense, rng, mk * 0.7, st.width_var)]
 
 
 def _seg_dist(p, a, b):
@@ -292,9 +347,15 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
     n = cfg.img_size
     k = n / REF
     P = lambda x, y: np.array(_to_px(cfg, x, y))  # noqa: E731
-    ink = tuple(float(v) for v in rng.uniform(*st.ink, 3))
-    paper = np.clip(np.array(st.paper, float) + rng.uniform(*st.paper_jitter, 3), 0, 255)
-    mk = rng.uniform(*st.pen_width) * k
+    digital = st.digital_prob > 0 and rng.random() < st.digital_prob
+    if digital:                                        # tablet: near-pure black on white
+        ink = tuple(float(v) for v in rng.uniform(*st.digital_ink, 3))
+        paper = 255.0 - rng.uniform(*st.digital_paper_drop, 3)
+        mk = rng.uniform(*st.digital_pen_width) * k
+    else:
+        ink = tuple(float(v) for v in rng.uniform(*st.ink, 3))
+        paper = np.clip(np.array(st.paper, float) + rng.uniform(*st.paper_jitter, 3), 0, 255)
+        mk = rng.uniform(*st.pen_width) * k
 
     dead = _dead_mask(cfg, scene, n) if fill_unreachable else None
     hatch = []
@@ -312,7 +373,7 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
             a, b = P(reg.x0, reg.y1), P(reg.x1, reg.y0)
             quad = np.array([[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]])
             quad = quad + rng.normal(0, st.region_corner_sigma * k, (4, 2))
-            sides = [_stroke(_wobbly_line(quad[i], quad[(i + 1) % 4], rng, 1.3 * k, 0.03),
+            sides = [_stroke(_wobbly_line(quad[i], quad[(i + 1) % 4], rng, 1.3 * k, st.region_overshoot),
                              rng, mk * 0.6, st.width_var) for i in range(4)]
             regions.append(DrawnRegion(quad, sides, cls, ch, group=gi))
 
@@ -328,14 +389,23 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
     obstacles = []
     for o in scene.obstacles:
         c, r = P(*o.c), o.r * cfg.scale
-        poly, _ = _wobbly_closed(c, r, rng, st.obstacle_wobble, st.stretch)
+        stretch = st.stretch if st.obstacle_stretch is None else st.obstacle_stretch
+        poly, _ = _wobbly_closed(c, r, rng, st.obstacle_wobble, stretch)
         outline = _stroke(np.vstack([poly, poly[:2]]), rng, mk * 0.7, st.width_var)
         solid = rng.random() < st.solid_fill_prob
-        scr = []
+        scr, over = [], 0.0
         if not solid:
             R = float(np.linalg.norm(poly - c, axis=1).max())
-            scr = _scribble_strokes(c, R, rng, st, k, mk)
-        obstacles.append(DrawnObstacle(poly, outline, solid, scr))
+            kind = rng.random() if (st.sparse_fill_prob or st.zigzag_fill_prob) else 1.0
+            if kind < st.sparse_fill_prob:
+                scr = _scribble_strokes(c, R, rng, st, k, mk, spacing=st.sparse_spacing, width=0.6)
+            elif kind < st.sparse_fill_prob + st.zigzag_fill_prob:
+                scr = _zigzag_stroke(c, R, rng, st, k, mk)
+            else:
+                scr = _scribble_strokes(c, R, rng, st, k, mk)
+            if st.fill_overshoot[1] > 0:
+                over = rng.uniform(*st.fill_overshoot) * k
+        obstacles.append(DrawnObstacle(poly, outline, solid, scr, over))
 
     agents = []
     r0 = cfg.agent_radius * cfg.scale
@@ -357,13 +427,16 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         x0, y0 = reg.quad.min(0)
         x1, y1 = reg.quad.max(0)
         reg.letter_h = min(st.letter_height_frac * min(x1 - x0, y1 - y0), st.letter_max_px * k)
-        reg.letter_h *= rng.uniform(0.8, 1.0)
+        reg.letter_h *= rng.uniform(*st.letter_scale)
+        if st.letter_in_pen:
+            reg.letter_th = max(1, int(round(mk * 0.7)))
         reg.letter_centre = tuple(_letter_spot(reg.quad, reg.letter_h, agents, k)
                                   + rng.normal(0, 1.5 * k, 2))
         reg.letter_rot = rng.uniform(-st.letter_rot_deg, st.letter_rot_deg)
 
     return Drawing(n, ink, paper, cfg.wall_half * cfg.scale, hatch, dead, regions, walls,
-                   obstacles, agents, st.printed_ink, st.label_extra_wall, st.label_extra_agent)
+                   obstacles, agents, st.printed_ink, st.label_extra_wall, st.label_extra_agent,
+                   digital)
 
 
 # -------------------------------------------------------------------- draw
@@ -382,11 +455,12 @@ def _poly_mask(n, poly):
     return m.astype(bool)
 
 
-def _letter_alpha(n, ch, centre, h, rot):
-    """Coverage (n, n) uint8 of one Hershey-script letter of height ~h px."""
+def _letter_alpha(n, ch, centre, h, rot, th=0):
+    """Coverage (n, n) uint8 of one Hershey-script letter of height ~h px,
+    stroke `th` px (0: h / 12, at least 2)."""
     font = cv2.FONT_HERSHEY_SCRIPT_SIMPLEX
     scale = h / 22.0
-    th = max(2, int(round(h / 12)))
+    th = th or max(2, int(round(h / 12)))
     (w, hh), _ = cv2.getTextSize(ch, font, scale, th)
     tile = np.zeros((hh * 3, w * 3), np.uint8)
     cv2.putText(tile, ch, (w, 2 * hh), font, scale, 255, th, cv2.LINE_AA)
@@ -428,8 +502,8 @@ def draw(d: Drawing, parts=False):
         lab[_poly_mask(n, reg.quad)] = reg.cls
         for s in reg.sides:
             _polyline(ink, s, 255)
-        np.maximum(ink, _letter_alpha(n, reg.letter, reg.letter_centre, reg.letter_h, reg.letter_rot),
-                   out=ink)
+        np.maximum(ink, _letter_alpha(n, reg.letter, reg.letter_centre, reg.letter_h, reg.letter_rot,
+                                      reg.letter_th), out=ink)
 
     # printed boundary band: crisp, in the image layer below the ink
     b = int(round(d.band_px))
@@ -449,7 +523,12 @@ def draw(d: Drawing, parts=False):
         else:
             for s in o.scribble:
                 _polyline(a, s, 255)
-            a[~m] = 0
+            clip = m
+            if o.overshoot >= 1:                       # a hand fill crosses its outline a little
+                r = int(round(o.overshoot))
+                clip = cv2.dilate(m.astype(np.uint8), cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))).astype(bool)
+            a[~clip] = 0
         _polyline(a, o.outline, 255)
         np.maximum(ink, a, out=ink)
 
@@ -474,8 +553,11 @@ def draw(d: Drawing, parts=False):
 
 # ------------------------------------------------------------------- photo
 
-def photo(img, lab, rng, st: SketchStyle, extra_maps=()):
+def photo(img, lab, rng, st: SketchStyle, extra_maps=(), digital=False):
     """Step 3: (uint8 image, labels, [extra maps], H). H maps drawn px -> photo px.
+
+    A digital drawing (tablet) has no camera: H is the identity and only a
+    light blur is applied (anti-aliasing of the export), no light, noise or JPEG.
 
     Where the perspective pulls the page edge inward, the uncovered border is
     filled with the printed band (ink, labelled wall), not replicated: replicating
@@ -483,6 +565,12 @@ def photo(img, lab, rng, st: SketchStyle, extra_maps=()):
     """
     n = img.shape[0]
     k = n / REF
+    if digital:
+        sigma = rng.uniform(*st.digital_blur) * k
+        if sigma > 0.05:
+            img = cv2.GaussianBlur(img, (0, 0), sigma)
+        return (np.clip(img, 0, 255).astype(np.uint8), lab, list(extra_maps),
+                np.eye(3, dtype=np.float64))
     src = np.float32([[0, 0], [n, 0], [n, n], [0, n]])
     dst = src + rng.uniform(-st.persp_px * k, st.persp_px * k, (4, 2)).astype(np.float32)
     H = cv2.getPerspectiveTransform(src, dst)
@@ -580,7 +668,8 @@ def sketch(scene, cfg=None, rng=None, fill_unreachable=True, style=None, parts=F
     d = perturb(scene, cfg, rng, st, fill_unreachable)
     out = draw(d, parts=parts)
     img, lab = out[0], out[1]
-    img, lab, extra, H = photo(img, lab, rng, st, extra_maps=list(out[2]) if parts else [])
+    img, lab, extra, H = photo(img, lab, rng, st, extra_maps=list(out[2]) if parts else [],
+                               digital=d.digital)
     drawn = drawn_scene(d, H, scene, cfg)
     if parts:
         return Image.fromarray(img, "RGB"), lab, drawn, {"rings": extra[0], "tails": extra[1], "H": H}

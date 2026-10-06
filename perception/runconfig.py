@@ -68,6 +68,7 @@ class TrainConfig:
     extract_subset: int = 100
     preview_every: int = 10
     deterministic: bool = False
+    init: str | None = None                # start from this checkpoint's weights (fine-tuning)
 
 
 @dataclass
@@ -235,6 +236,9 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
     g.add_argument("--extract-subset", dest="extract_subset", type=int, default=None)
     g.add_argument("--preview-every", dest="preview_every", type=int, default=None)
     g.add_argument("--deterministic", action="store_const", const=True, default=None)
+    g.add_argument("--init", default=None,
+                   help="start from the model weights of this checkpoint (same arch), with a "
+                        "fresh optimiser and schedule: fine-tuning on new data")
 
     g = p.add_argument_group("extract")
     g.add_argument("--ring-thresh", dest="ring_thresh", type=float, default=None)

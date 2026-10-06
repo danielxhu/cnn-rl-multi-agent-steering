@@ -402,3 +402,32 @@ them; sections that state a changed number were updated too.
   of step 4 still guards against a wrong set. Phone photos of the whole page
   take the first path as before (`test_rectify_recovers_sheet_and_id`
   unchanged and passing).
+
+**Sketch style v2 (6 Oct 2026)**
+
+- The first real input, a tablet drawing on the drawing-sheet PDF, parsed
+  badly with the v1-trained model (obstacles broken into wall pieces, the S box
+  missed): 1–2 px strokes at 512 against v1's 3–5, sparse thin hatching inside
+  obstacles, a pure white page with no photo effects, elongated obstacles,
+  small letters. Thickening its strokes by hand already turned two of three
+  obstacles back into circles, so the gap is the training style, not the
+  method.
+- `sketch.SKETCH_V2` (`generate.py --style sketch2`) widens §3.2: a *digital*
+  medium in 35 % of images (white page minus 0–4, ink 0–30, pen 1.2–3.5 px, no
+  perspective / light / noise / JPEG, blur 0–0.5); photographed pens 2–5 px;
+  non-solid obstacles split into dense (as v1), sparse (spacing 7–14 px, 0.6 ×
+  pen) and one zigzag scribble (spacing 5–10 px), with fills crossing the
+  outline by up to 3 px; obstacle stretch ± 22 %; agent radius × 0.7–1.3;
+  region sides drawn up to 10 % past the corners; letters 0.55–1.0 of the
+  largest that fits, in the pen's width. Labels keep §3.3's semantics.
+- `SketchStyle()` is unchanged, and v2's extra random draws happen only when
+  its options are on, so `--style sketch` is pixel-identical to before (checked
+  by hashing 14 generated scenes before and after the change).
+- Checked on 140 v2 scenes: JSON ↔ drawing, heat-target and extraction checks
+  all pass; `perception` tests now run those three on v1 and v2 scenes, `sim`
+  tests check v2 determinism and that the digital medium has no camera. Wall
+  lines: in ~4 % of v2 (and v1) scenes a short, thick, bent pocket wall forks
+  its skeleton into an extra off-axis piece; left as a known limit.
+- Datasets `train_sketch2` / `val_sketch2` / `test_sketch2` (5000 / 500 / 1000,
+  seeds 120 / 220 / 320). `train.py --init <ckpt>` starts from a trained
+  model's weights with a fresh optimiser and schedule (fine-tuning).

@@ -470,22 +470,25 @@ def test_multi_root_training_set():
 # -------------------------------------------------------- sketch (hand-drawn)
 
 _SKETCHES = []
+_SKETCHES_BY_STYLE = {}
+SKETCH_STYLE_NAMES = ("sketch", "sketch2")
 
 
-def _sketch_scenes(cfg):
+def _sketch_scenes(cfg, style="sketch"):
     """One sketch scene per layout (2–8 agents), with the per-agent ring and
-    tail maps the renderer drew; rendered once and cached across tests."""
-    if not _SKETCHES:
-        from sketch import sketch
+    tail maps the renderer drew; rendered once per style and cached across tests."""
+    cache = _SKETCHES if style == "sketch" else _SKETCHES_BY_STYLE.setdefault(style, [])
+    if not cache:
+        from sketch import STYLES, sketch
         rng = np.random.default_rng(77)
         for k, layout in enumerate(LAYOUTS):
             s = random_scene(rng, cfg, layout=layout, n_agents=int(rng.integers(2, 9)),
                              n_obstacles=int(rng.integers(1, 5)))
             assert s is not None, f"{layout}: sampler gave up"
             s.seed = 9000 + k
-            img, lab, drawn, parts = sketch(s, cfg, parts=True)
-            _SKETCHES.append((drawn, lab, parts))
-    return _SKETCHES
+            img, lab, drawn, parts = sketch(s, cfg, parts=True, style=STYLES[style])
+            cache.append((drawn, lab, parts))
+    return cache
 
 
 def _circle_fit(xs, ys):
@@ -507,7 +510,7 @@ def test_sketch_json_matches_drawing():
     """
     cfg = Config()
     n_agents = 0
-    for drawn, lab, parts in _sketch_scenes(cfg):
+    for drawn, lab, parts in [x for st in SKETCH_STYLE_NAMES for x in _sketch_scenes(cfg, st)]:
         rings, tails = parts["rings"], parts["tails"]
         assert (lab[(rings > 0) | (tails > 0)] == C_AGENT).all(), "ring/tail maps must be agent label"
         for k, a in enumerate(drawn.agents):
@@ -553,7 +556,7 @@ def test_sketch_instance_targets_align():
     land on the neighbour of a 4 px tail)."""
     cfg = Config()
     world = _world(cfg)
-    for drawn, lab, _ in _sketch_scenes(cfg):
+    for drawn, lab, _ in [x for st in SKETCH_STYLE_NAMES for x in _sketch_scenes(cfg, st)]:
         for size in (512, 256):
             heat, dirs, mask = instance_targets(drawn, world, size)
             ay, ax = np.nonzero(_downsample(lab, size) == C_AGENT)
@@ -573,7 +576,7 @@ def test_extract_on_sketch_labels():
     cfg = Config()
     world = _world(cfg)
     for size in (512, 256):
-        for drawn, lab, _ in _sketch_scenes(cfg):
+        for drawn, lab, _ in [x for st in SKETCH_STYLE_NAMES for x in _sketch_scenes(cfg, st)]:
             heat, dirs, _ = instance_targets(drawn, world, size)
             p = extract(_downsample(lab, size), world, heat=heat[0], dir=dirs)
             assert p is not None, f"{drawn.layout} @{size}: parse failed"

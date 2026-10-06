@@ -247,6 +247,17 @@ def test_sketch_is_deterministic():
     assert not np.array_equal(np.asarray(img1), np.asarray(img3)), "the seed must matter"
     assert d1.as_dict(cfg, "t") != d3.as_dict(cfg, "t")
 
+    # the widened style (v2) is deterministic too, and its digital medium has no camera
+    from dataclasses import replace
+    from sketch import SKETCH_V2
+    a = sketch(s, cfg, style=SKETCH_V2)
+    b = sketch(s, cfg, style=SKETCH_V2)
+    assert np.array_equal(np.asarray(a[0]), np.asarray(b[0])) and np.array_equal(a[1], b[1])
+    assert a[2].as_dict(cfg, "t") == b[2].as_dict(cfg, "t")
+    img, lab, d, parts = sketch(s, cfg, style=replace(SKETCH_V2, digital_prob=1.0), parts=True)
+    assert np.allclose(parts["H"], np.eye(3)), "a tablet drawing is not photographed"
+    assert np.median(np.asarray(img)) >= 250, "a tablet drawing is white"
+
 
 @test
 def test_sketch_labels_contain_every_class():
