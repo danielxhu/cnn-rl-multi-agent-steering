@@ -89,6 +89,8 @@ class ExtractConfig:
     line_axis_deg: float = 10.0            # walls this close to an axis become axis-parallel; 0 = off
     line_border: float = 3.0               # skeleton this close to the edge is the boundary band
     line_border_reach: float = 4.5         # ends this close to the edge are extended onto it
+    # regions: a box holding an agent is a start whatever its letter says (sketch input)
+    region_by_agents: bool = False
 
 
 @dataclass
@@ -251,4 +253,6 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
                    help="lines: straight wall centre lines like a generated scene (for sketches)")
     g.add_argument("--line-tol", dest="line_tol", type=float, default=None)
     g.add_argument("--line-join", dest="line_join", type=float, default=None)
+    g.add_argument("--region-by-agents", dest="region_by_agents", action="store_const", const=True,
+                   default=None, help="a region box holding an agent is a start (S / G misread)")
     return p

@@ -229,6 +229,10 @@ python predict.py --ckpt runs/sketch_s256_inst_s0/ckpt_best.pt --image IMG_0042.
   pens and sparse / zigzag obstacle fills. Fine-tune an existing sketch model on
   it instead of training from scratch:
   `python train.py --data-root data --train train_sketch2 train_aug3 --val val_sketch2 --size 256 --instance-head --wall-mode lines --init runs/sketch_s256_inst_seed0/ckpt_best.pt --epochs 15 --lr 3e-4 --out runs/sketch2_ft_seed0`
+- **Style v3** (`--style sketch3`, sets `*_sketch3`) adds S / G in many hands, a
+  harsher camera, pen dropouts and stray marks. Train or predict with
+  `--region-by-agents` so a box holding agents is a start even when its letter
+  is misread.
 - Look at a few generated scenes before a long run:
   `python ../sim/generate.py --n 7 --style sketch --preview 7 --out data/preview_sketch`.
 

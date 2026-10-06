@@ -471,7 +471,7 @@ def test_multi_root_training_set():
 
 _SKETCHES = []
 _SKETCHES_BY_STYLE = {}
-SKETCH_STYLE_NAMES = ("sketch", "sketch2")
+SKETCH_STYLE_NAMES = ("sketch", "sketch2", "sketch3")
 
 
 def _sketch_scenes(cfg, style="sketch"):
@@ -646,6 +646,30 @@ def test_wall_lines_like_generated():
         sim.step(np.stack([greedy_action(sim, i) for i in range(len(sim.pos))]))
     img = render_clean(p)
     assert np.asarray(img).shape == (p.size, p.size, 3)
+
+
+@test
+def test_region_by_agents_fixes_a_misread_letter():
+    """A start box labelled as goal (the S read as G) comes back as the start
+    with region_by_agents, because it holds the agents; without it the scene
+    has no start-goal pair."""
+    from runconfig import ExtractConfig
+    cfg = Config()
+    world = _world(cfg)
+    for layout in ("doorway", "crossing"):
+        s = random_scene(np.random.default_rng(31), cfg, layout=layout, n_agents=6, n_obstacles=2)
+        _, lab = render(s, cfg)
+        bad = lab.copy()
+        bad[bad == C_START] = C_GOAL                       # every S misread
+        heat, dirs, _ = instance_targets(s, world, cfg.img_size)
+        assert extract(bad, world, heat=heat[0], dir=dirs) is None or layout == "crossing"
+        p = extract(bad, world, heat=heat[0], dir=dirs, ecfg=ExtractConfig(region_by_agents=True))
+        assert p is not None, f"{layout}: no parse with region_by_agents"
+        for gs, gg in s.groups:
+            if not any(gs.contains(a.pos) for a in s.agents):
+                continue                                   # an empty start keeps its (wrong) letter
+            assert max(region_iou(gs, ps) for ps, _ in p.scene.groups) > 0.95, f"{layout}: start not recovered"
+            assert max(region_iou(gg, pg) for _, pg in p.scene.groups) > 0.95, f"{layout}: goal lost"
 
 
 def main():

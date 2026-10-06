@@ -43,13 +43,18 @@ Invariants:
   pens, sparse-hatch and zigzag obstacle fills, elongated obstacles, region
   boxes drawn past their corners, smaller letters in the pen's own width. Its
   extra random draws only happen when those options are on, which is what
-  keeps v1 unchanged.
+  keeps v1 unchanged. ``SKETCH_V3`` (``--style sketch3``) adds what the first
+  v2 trial still missed: S / G in many hands (eight Hershey faces, italic,
+  and procedural pen-stroke letters, all sheared, stretched and elastically
+  warped), a harsher camera (noise, blur, JPEG, shadow, low resolution,
+  gamma), pen dropouts and stray marks. The same rule holds: v1 and v2 stay
+  pixel-identical.
 """
 from __future__ import annotations
 
 import io
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
@@ -119,6 +124,29 @@ class SketchStyle:
     letter_scale: tuple = (0.8, 1.0)            # of the largest letter that fits
     letter_in_pen: bool = False                 # letter stroke = the pen's width, not h / 12
 
+    # --- v3 options (defaults off; see SKETCH_V3) ---
+    letter_variety: bool = False                # many faces + procedural strokes, warped
+    letter_proc_prob: float = 0.5               # of those: pen-stroke letters, else a font
+    letter_shear: float = 0.35                  # tan of the slant, +/-
+    letter_aspect: tuple = (0.7, 1.35)          # width / height stretch
+    letter_rot_v3: float = 25.0                 # deg
+    letter_warp: float = 0.06                   # elastic warp amplitude, fraction of h
+    harsh_camera: bool = False
+    noise_std_range: tuple = (2.0, 14.0)
+    blur_range: tuple = (0.3, 2.0)
+    jpeg_range: tuple = (30, 90)
+    light_range: tuple = (0.05, 0.50)
+    persp_px_v3: float = 12.0
+    shadow_prob: float = 0.3
+    shadow_strength: tuple = (0.55, 0.9)        # brightness kept in the shadow
+    lowres_prob: float = 0.3
+    lowres_scale: tuple = (0.35, 0.8)
+    gamma_range: tuple = (0.7, 1.4)
+    dropout_prob: float = 0.0                   # pen running dry: gaps along strokes
+    dropout_frac: tuple = (0.05, 0.2)
+    stray_prob: float = 0.0                     # short stray marks, labelled background
+    stray_count: tuple = (1, 4)
+
 
 SKETCH_V2 = SketchStyle(
     pen_width=(2.0, 5.0), digital_prob=0.35,
@@ -126,7 +154,11 @@ SKETCH_V2 = SketchStyle(
     obstacle_stretch=0.22, agent_radius_mult=(0.7, 1.3), region_overshoot=0.10,
     letter_scale=(0.55, 1.0), letter_in_pen=True,
 )
-STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2}
+SKETCH_V3 = replace(
+    SKETCH_V2, letter_variety=True, letter_scale=(0.4, 1.0), harsh_camera=True,
+    dropout_prob=0.35, stray_prob=0.4,
+)
+STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2, "sketch3": SKETCH_V3}
 
 
 # --------------------------------------------------------------- primitives
@@ -225,6 +257,7 @@ class DrawnRegion:
     letter_rot: float = 0.0
     group: int = 0
     letter_th: int = 0                           # stroke width; 0: h / 12
+    letter_form: dict | None = None              # v3: face / strokes, shear, aspect, warp seed
 
 
 @dataclass
@@ -245,6 +278,9 @@ class Drawing:
     label_extra_wall: int = 2
     label_extra_agent: int = 3
     digital: bool = False                        # tablet drawing: no photo effects
+    stray: list = field(default_factory=list)    # v3: [Stroke] marks that are nothing
+    dropout_seed: int | None = None              # v3: gaps along the ink
+    dropout_frac: float = 0.0
 
 
 # ----------------------------------------------------------------- perturb
@@ -312,6 +348,104 @@ def _zigzag_stroke(c, R, rng, st, k, mk):
     dense = np.concatenate([np.linspace(a, b, max(2, int(np.linalg.norm(b - a) / (3 * k))),
                                         endpoint=False) for a, b in zip(pts[:-1], pts[1:])] + [pts[-1:]])
     return [_stroke(dense, rng, mk * 0.7, st.width_var)]
+
+
+HERSHEY_FACES = [cv2.FONT_HERSHEY_SIMPLEX, cv2.FONT_HERSHEY_PLAIN, cv2.FONT_HERSHEY_DUPLEX,
+                 cv2.FONT_HERSHEY_COMPLEX, cv2.FONT_HERSHEY_TRIPLEX, cv2.FONT_HERSHEY_COMPLEX_SMALL,
+                 cv2.FONT_HERSHEY_SCRIPT_SIMPLEX, cv2.FONT_HERSHEY_SCRIPT_COMPLEX]
+
+# pen-stroke skeletons in a unit box (x right, y down); each list is one stroke
+LETTER_SKELETONS = {
+    "S": [[[(0.85, 0.15), (0.5, 0.0), (0.15, 0.18), (0.25, 0.42), (0.75, 0.58), (0.85, 0.82),
+            (0.5, 1.0), (0.12, 0.85)]],
+          [[(0.8, 0.1), (0.35, 0.02), (0.2, 0.3), (0.8, 0.65), (0.6, 0.98), (0.15, 0.9)]]],
+    "G": [[[(0.85, 0.18), (0.55, 0.0), (0.18, 0.15), (0.05, 0.5), (0.2, 0.86), (0.55, 1.0),
+            (0.85, 0.85), (0.9, 0.58), (0.55, 0.58)]],
+          [[(0.85, 0.2), (0.5, 0.0), (0.12, 0.25), (0.1, 0.75), (0.5, 1.0), (0.9, 0.8), (0.9, 0.55)],
+           [(0.55, 0.55), (0.95, 0.55)]],
+          [[(0.8, 0.15), (0.45, 0.0), (0.1, 0.35), (0.25, 0.9), (0.7, 0.95), (0.85, 0.6),
+            (0.6, 0.6), (0.95, 0.6)]]],
+}
+
+
+def _catmull_rom(pts, n_per=8):
+    """Smooth curve through the control points (end points repeated)."""
+    P = np.vstack([pts[:1], pts, pts[-1:]])
+    out = []
+    for i in range(1, len(P) - 2):
+        p0, p1, p2, p3 = P[i - 1], P[i], P[i + 1], P[i + 2]
+        for t in np.linspace(0, 1, n_per, endpoint=False):
+            t2, t3 = t * t, t * t * t
+            out.append(0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+                              + (-p0 + 3 * p1 - 3 * p2 + p3) * t3))
+    out.append(P[-2])
+    return np.array(out)
+
+
+def _letter_form(ch, rng, st):
+    """Random hand for one letter (v3): a face or pen strokes, plus the warp."""
+    form = {"shear": rng.uniform(-st.letter_shear, st.letter_shear),
+            "aspect": rng.uniform(*st.letter_aspect),
+            "warp": rng.uniform(0, st.letter_warp), "seed": int(rng.integers(2 ** 31))}
+    if rng.random() < st.letter_proc_prob:
+        sk = LETTER_SKELETONS[ch][int(rng.integers(len(LETTER_SKELETONS[ch])))]
+        form["strokes"] = [np.array(stroke) + rng.normal(0, 0.05, (len(stroke), 2)) for stroke in sk]
+    else:
+        form["face"] = HERSHEY_FACES[int(rng.integers(len(HERSHEY_FACES)))] | (
+            cv2.FONT_ITALIC if rng.random() < 0.3 else 0)
+    return form
+
+
+def _letter_alpha_v3(n, ch, centre, h, rot, th, form):
+    """Coverage (n, n) uint8 of one letter in the hand `form`, height ~h px."""
+    th = max(1, min(int(th or round(h / 12)), int(h / 7)))   # never a blob: at most h / 7
+    pad = int(h) + 4 * th + 8
+    S = 3 * pad
+    tile = np.zeros((S, S), np.uint8)
+    if "strokes" in form:
+        for stroke in form["strokes"]:
+            curve = _catmull_rom(stroke) * h + (pad, pad)
+            q = np.round(curve * (1 << SUBPIX)).astype(np.int32)
+            cv2.polylines(tile, [q], False, 255, th, cv2.LINE_AA, SUBPIX)
+    else:
+        scale = h / 22.0
+        (w, hh), _ = cv2.getTextSize(ch, form["face"], scale, th)
+        if hh > 0:
+            scale *= h / hh                           # faces differ in cap height
+        cv2.putText(tile, ch, (pad, pad + int(h)), form["face"], scale, 255, th, cv2.LINE_AA)
+    ys, xs = np.nonzero(tile)
+    if len(xs) == 0:
+        return np.zeros((n, n), np.uint8)
+    cy, cx = (ys.min() + ys.max()) / 2, (xs.min() + xs.max()) / 2
+    # elastic warp: smooth random displacement, amplitude form["warp"] * h
+    if form["warp"] > 0:
+        r = np.random.default_rng(form["seed"])
+        g = max(3, int(S / 8))
+        dx = cv2.resize(r.normal(0, 1, (g, g)).astype(np.float32), (S, S), interpolation=cv2.INTER_CUBIC)
+        dy = cv2.resize(r.normal(0, 1, (g, g)).astype(np.float32), (S, S), interpolation=cv2.INTER_CUBIC)
+        yy, xx = np.mgrid[0:S, 0:S].astype(np.float32)
+        a = np.float32(form["warp"] * h)
+        tile = cv2.remap(tile, (xx + a * dx).astype(np.float32), (yy + a * dy).astype(np.float32),
+                         cv2.INTER_LINEAR)
+    # shear, aspect and rotation about the ink centre, then onto the canvas
+    A = np.array([[form["aspect"], form["shear"], 0], [0, 1, 0]], np.float64)
+    R = cv2.getRotationMatrix2D((0, 0), rot, 1.0)
+    M = R[:, :2] @ A[:, :2]
+    M = np.hstack([M, (np.array(centre) - M @ np.array([cx, cy]))[:, None]])
+    return cv2.warpAffine(tile, M, (n, n))
+
+
+def _stray_strokes(n, rng, st, k, mk):
+    """A few short marks that are not part of the scene (labels untouched)."""
+    out = []
+    for _ in range(int(rng.integers(st.stray_count[0], st.stray_count[1] + 1))):
+        a = rng.uniform(0.08 * n, 0.92 * n, 2)
+        L = rng.uniform(4, 25) * k
+        ang = rng.uniform(0, 2 * math.pi)
+        b = a + L * np.array([math.cos(ang), math.sin(ang)])
+        out.append(_stroke(_wobbly_line(a, b, rng, 0.8 * k, step=2.0 * k), rng, mk * rng.uniform(0.5, 1.0),
+                           st.width_var))
+    return out
 
 
 def _seg_dist(p, a, b):
@@ -430,13 +564,22 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         reg.letter_h *= rng.uniform(*st.letter_scale)
         if st.letter_in_pen:
             reg.letter_th = max(1, int(round(mk * 0.7)))
+        if st.letter_variety:
+            reg.letter_form = _letter_form(reg.letter, rng, st)
         reg.letter_centre = tuple(_letter_spot(reg.quad, reg.letter_h, agents, k)
                                   + rng.normal(0, 1.5 * k, 2))
         reg.letter_rot = rng.uniform(-st.letter_rot_deg, st.letter_rot_deg)
+        if st.letter_variety:
+            reg.letter_rot = rng.uniform(-st.letter_rot_v3, st.letter_rot_v3)
+
+    stray = _stray_strokes(n, rng, st, k, mk) if st.stray_prob > 0 and rng.random() < st.stray_prob else []
+    drop_seed, drop_frac = None, 0.0
+    if st.dropout_prob > 0 and rng.random() < st.dropout_prob:
+        drop_seed, drop_frac = int(rng.integers(2 ** 31)), rng.uniform(*st.dropout_frac)
 
     return Drawing(n, ink, paper, cfg.wall_half * cfg.scale, hatch, dead, regions, walls,
                    obstacles, agents, st.printed_ink, st.label_extra_wall, st.label_extra_agent,
-                   digital)
+                   digital, stray, drop_seed, drop_frac)
 
 
 # -------------------------------------------------------------------- draw
@@ -502,8 +645,13 @@ def draw(d: Drawing, parts=False):
         lab[_poly_mask(n, reg.quad)] = reg.cls
         for s in reg.sides:
             _polyline(ink, s, 255)
-        np.maximum(ink, _letter_alpha(n, reg.letter, reg.letter_centre, reg.letter_h, reg.letter_rot,
-                                      reg.letter_th), out=ink)
+        if reg.letter_form is not None:
+            alpha = _letter_alpha_v3(n, reg.letter, reg.letter_centre, reg.letter_h, reg.letter_rot,
+                                     reg.letter_th, reg.letter_form)
+        else:
+            alpha = _letter_alpha(n, reg.letter, reg.letter_centre, reg.letter_h, reg.letter_rot,
+                                  reg.letter_th)
+        np.maximum(ink, alpha, out=ink)
 
     # printed boundary band: crisp, in the image layer below the ink
     b = int(round(d.band_px))
@@ -543,6 +691,14 @@ def draw(d: Drawing, parts=False):
             _polyline(rings, ag.ring, i + 1, extra=extra, aa=False)
             _polyline(tails, ag.tail, i + 1, extra=extra, aa=False)
 
+    for s in d.stray:                                  # marks that are nothing: ink only
+        _polyline(ink, s, 255)
+    if d.dropout_seed is not None:                     # pen running dry: smooth gaps in the ink
+        r = np.random.default_rng(d.dropout_seed)
+        g = max(4, n // 24)
+        field_ = cv2.resize(r.random((g, g)).astype(np.float32), (n, n), interpolation=cv2.INTER_CUBIC)
+        ink = np.where(field_ < np.quantile(field_, d.dropout_frac), ink * 0.15, ink).astype(np.uint8)
+
     img = np.empty((n, n, 3), np.float32)
     img[:] = d.paper
     img[band] = d.printed_ink
@@ -572,7 +728,8 @@ def photo(img, lab, rng, st: SketchStyle, extra_maps=(), digital=False):
         return (np.clip(img, 0, 255).astype(np.uint8), lab, list(extra_maps),
                 np.eye(3, dtype=np.float64))
     src = np.float32([[0, 0], [n, 0], [n, n], [0, n]])
-    dst = src + rng.uniform(-st.persp_px * k, st.persp_px * k, (4, 2)).astype(np.float32)
+    pp = st.persp_px_v3 if st.harsh_camera else st.persp_px
+    dst = src + rng.uniform(-pp * k, pp * k, (4, 2)).astype(np.float32)
     H = cv2.getPerspectiveTransform(src, dst)
 
     def warp(m, interp, fill):
@@ -585,15 +742,40 @@ def photo(img, lab, rng, st: SketchStyle, extra_maps=(), digital=False):
 
     yy, xx = np.mgrid[0:n, 0:n] / n
     d2 = (xx - rng.uniform(0, 1)) ** 2 + (yy - rng.uniform(0, 1)) ** 2
-    img = img * (1 - rng.uniform(*st.light_falloff) * d2 / d2.max())[..., None]
-    img = cv2.GaussianBlur(img, (0, 0), rng.uniform(*st.blur_sigma) * k)
-    img = np.clip(img + rng.normal(0, st.noise_std, img.shape), 0, 255).astype(np.uint8)
-    q = int(rng.integers(st.jpeg_quality[0], st.jpeg_quality[1] + 1))
+    if not st.harsh_camera:
+        img = img * (1 - rng.uniform(*st.light_falloff) * d2 / d2.max())[..., None]
+        img = cv2.GaussianBlur(img, (0, 0), rng.uniform(*st.blur_sigma) * k)
+        img = np.clip(img + rng.normal(0, st.noise_std, img.shape), 0, 255).astype(np.uint8)
+        q = int(rng.integers(st.jpeg_quality[0], st.jpeg_quality[1] + 1))
+    else:
+        img = _harsh_camera(img, rng, st, k, xx, yy, d2)
+        q = int(rng.integers(st.jpeg_range[0], st.jpeg_range[1] + 1))
     buf = io.BytesIO()
     Image.fromarray(img, "RGB").save(buf, format="JPEG", quality=q)
     buf.seek(0)
     img = np.asarray(Image.open(buf).convert("RGB"), np.uint8)
     return img, lab, extra_maps, H
+
+
+def _harsh_camera(img, rng, st, k, xx, yy, d2):
+    """v3 photo: stronger light fall-off, a soft shadow edge, gamma, low
+    resolution, heavier blur and noise. Geometry is untouched (labels stay)."""
+    n = img.shape[0]
+    img = img * (1 - rng.uniform(*st.light_range) * d2 / d2.max())[..., None]
+    if rng.random() < st.shadow_prob:                  # a hand or phone casting a shadow
+        ang = rng.uniform(0, 2 * math.pi)
+        t = (xx - 0.5) * math.cos(ang) + (yy - 0.5) * math.sin(ang) - rng.uniform(-0.3, 0.3)
+        edge = 1 / (1 + np.exp(-t / rng.uniform(0.01, 0.08)))
+        img = img * (1 - (1 - rng.uniform(*st.shadow_strength)) * edge)[..., None]
+    g = rng.uniform(*st.gamma_range)
+    img = 255.0 * (np.clip(img, 0, 255) / 255.0) ** g
+    if rng.random() < st.lowres_prob:                  # a far or cheap camera
+        m = max(32, int(n * rng.uniform(*st.lowres_scale)))
+        img = cv2.resize(cv2.resize(img, (m, m), interpolation=cv2.INTER_AREA), (n, n),
+                         interpolation=cv2.INTER_LINEAR)
+    img = cv2.GaussianBlur(img, (0, 0), rng.uniform(*st.blur_range) * k)
+    img = img + rng.normal(0, rng.uniform(*st.noise_std_range), img.shape)
+    return np.clip(img, 0, 255).astype(np.uint8)
 
 
 # ------------------------------------------------------- drawn -> scene JSON

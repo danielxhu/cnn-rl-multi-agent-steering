@@ -249,11 +249,12 @@ def test_sketch_is_deterministic():
 
     # the widened style (v2) is deterministic too, and its digital medium has no camera
     from dataclasses import replace
-    from sketch import SKETCH_V2
-    a = sketch(s, cfg, style=SKETCH_V2)
-    b = sketch(s, cfg, style=SKETCH_V2)
-    assert np.array_equal(np.asarray(a[0]), np.asarray(b[0])) and np.array_equal(a[1], b[1])
-    assert a[2].as_dict(cfg, "t") == b[2].as_dict(cfg, "t")
+    from sketch import SKETCH_V2, SKETCH_V3
+    for st in (SKETCH_V2, SKETCH_V3):
+        a = sketch(s, cfg, style=st)
+        b = sketch(s, cfg, style=st)
+        assert np.array_equal(np.asarray(a[0]), np.asarray(b[0])) and np.array_equal(a[1], b[1])
+        assert a[2].as_dict(cfg, "t") == b[2].as_dict(cfg, "t")
     img, lab, d, parts = sketch(s, cfg, style=replace(SKETCH_V2, digital_prob=1.0), parts=True)
     assert np.allclose(parts["H"], np.eye(3)), "a tablet drawing is not photographed"
     assert np.median(np.asarray(img)) >= 250, "a tablet drawing is white"

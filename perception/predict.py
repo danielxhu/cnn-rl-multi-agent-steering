@@ -154,6 +154,8 @@ def main(argv=None):
     p.add_argument("--wall-mode", choices=["surface", "lines"], default=None,
                    help="override the run's extraction: lines = straight centre lines, "
                         "plus <name>_clean.png, the parse re-drawn by the generator's renderer")
+    p.add_argument("--region-by-agents", action="store_true",
+                   help="a region box holding an agent is a start, whatever the S / G letter")
     a = p.parse_args(argv)
     if not a.image and not a.dir:
         p.error("give --image or --dir")
@@ -162,6 +164,8 @@ def main(argv=None):
     pr = Predictor(a.ckpt, a.device)
     if a.wall_mode:
         pr.ecfg = replace(pr.ecfg, wall_mode=a.wall_mode)
+    if a.region_by_agents:
+        pr.ecfg = replace(pr.ecfg, region_by_agents=True)
     if a.image:
         paths = [Path(a.image)]
     elif a.photo:

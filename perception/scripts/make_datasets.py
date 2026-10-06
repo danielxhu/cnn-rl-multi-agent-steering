@@ -10,7 +10,8 @@ table below is the specification: every set is ``--layout mixed`` and 512 px;
 the 128 / 256 conditions come from downsampling at load time.  The three
 ``*_sketch`` sets use the hand-drawn renderer (``generate.py --style sketch``,
 DESIGN_SKETCH §4); ``--only '*sketch*'`` makes just those; the ``*_sketch2`` sets use the widened
-style (``--style sketch2``) and ``--only '*sketch2'`` makes only them.  ``agent_gap``
+style (``--style sketch2``) and ``--only '*sketch2'`` makes only them; likewise
+``*_sketch3`` (``--style sketch3``) and ``--only '*sketch3'``.  ``agent_gap``
 is not a ``generate.py`` flag, so each spacing set gets a one-line JSON config.
 """
 from __future__ import annotations
@@ -63,6 +64,10 @@ DATASETS = [
     ("train_sketch2", 5000, BASE + ["--style", "sketch2", "--seed", "120"]),
     ("val_sketch2", 500, BASE + ["--style", "sketch2", "--seed", "220"]),
     ("test_sketch2", 1000, BASE + ["--style", "sketch2", "--seed", "320"]),
+    # v3: S / G in many hands, harsher camera, pen dropouts, stray marks
+    ("train_sketch3", 5000, BASE + ["--style", "sketch3", "--seed", "130"]),
+    ("val_sketch3", 500, BASE + ["--style", "sketch3", "--seed", "230"]),
+    ("test_sketch3", 1000, BASE + ["--style", "sketch3", "--seed", "330"]),
 ]
 SKETCH_COST = 2.0            # a sketch scene costs about twice a rendered one
 

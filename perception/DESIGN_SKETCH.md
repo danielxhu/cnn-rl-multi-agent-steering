@@ -431,3 +431,32 @@ them; sections that state a changed number were updated too.
 - Datasets `train_sketch2` / `val_sketch2` / `test_sketch2` (5000 / 500 / 1000,
   seeds 120 / 220 / 320). `train.py --init <ckpt>` starts from a trained
   model's weights with a fresh optimiser and schedule (fine-tuning).
+
+**Sketch style v3 and region_by_agents (6 Oct 2026)**
+
+- After v2 the real drawings were still not parsed reliably, and the S / G
+  boxes never came out right. Cause: every letter in v1 / v2 is one Hershey
+  script glyph, only scaled and rotated, while the region class rests entirely
+  on that letter.
+- `sketch.SKETCH_V3` (`--style sketch3`) = v2 plus: letters in many hands —
+  half from the eight Hershey faces (30 % italic), half procedural pen strokes
+  (2 S and 3 G skeletons, control points jittered, Catmull–Rom curves) — all
+  sheared (± 0.35), stretched (0.7–1.35), rotated (± 25°), elastically warped
+  (≤ 6 % of the height), 0.4–1.0 of the largest size, stroke ≤ h / 7; a harsher
+  camera for the photographed medium (noise σ 2–14, blur 0.3–2.0, JPEG 30–90,
+  light fall-off ≤ 50 %, a soft shadow edge in 30 %, low resolution 0.35–0.8 in
+  30 %, gamma 0.7–1.4, residual perspective ± 12 px); pen dropouts in 35 %
+  (5–20 % of the ink faded along smooth gaps; labels unchanged); 1–4 stray
+  marks in 40 % (ink only, labelled background). v1 and v2 stay
+  pixel-identical (hashes of 14 scenes each, before and after).
+- `ExtractConfig.region_by_agents` (`--region-by-agents` in train / predict):
+  region boxes are found on the union of both classes; a box holding a parsed
+  agent is a start, others take their majority class. Agents are always drawn
+  in their start box, so a misread letter no longer loses the pair. Default
+  off (E5 unchanged); test `test_region_by_agents_fixes_a_misread_letter`.
+- Checks on 140 v3 scenes: heat-target and extraction checks pass; JSON ↔
+  drawing passes the 1 px circle-fit bound everywhere, and one agent of ~650
+  exceeds the loose raw-centroid bound (2.71 > 2.5 px). `perception` tests run
+  the sketch checks on v1, v2 and v3.
+- Datasets `train_sketch3` / `val_sketch3` / `test_sketch3` (seeds 130 / 230 /
+  330); 4.9 scenes/s on one core.

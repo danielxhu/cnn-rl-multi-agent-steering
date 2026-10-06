@@ -513,11 +513,37 @@ def pair_score(start: Region, goal: Region) -> float:
     return max(sx, sy)
 
 
-def extract_regions(start_mask, goal_mask, scale, world, ecfg=ExtractConfig()):
-    """[(start, goal)] pairs sorted by start (x0, y0); plus the number of unpaired regions."""
+def _boxes_by_agents(start_mask, goal_mask, scale, world, ecfg, seal, agent_pos):
+    """(starts, goals) from the union of both region classes: each box takes the
+    class most of its pixels have, except that a box holding an agent is a start
+    (agents are drawn in their start region), so a misread S / G letter does not
+    flip it."""
+    union = start_mask | goal_mask
+    starts, goals = [], []
+    for reg, _ in _boxes(union, scale, world, ecfg.min_region_area_px, seal):
+        if any(reg.contains(p) for p in agent_pos):
+            starts.append(reg)
+            continue
+        S = start_mask.shape[0]
+        W = float(world["size"])
+        (c0, r0), (c1, r1) = world_to_px(W, S, reg.x0, reg.y1), world_to_px(W, S, reg.x1, reg.y0)
+        sl = (slice(max(0, int(r0)), int(math.ceil(r1)) + 1), slice(max(0, int(c0)), int(math.ceil(c1)) + 1))
+        (starts if start_mask[sl].sum() > goal_mask[sl].sum() else goals).append(reg)
+    return starts, goals
+
+
+def extract_regions(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), agent_pos=None):
+    """[(start, goal)] pairs sorted by start (x0, y0); plus the number of unpaired regions.
+
+    With ``ecfg.region_by_agents`` and agent positions (world units), boxes are
+    found on the union of both classes and a box holding an agent is a start.
+    """
     seal = pixel_geometry(world, start_mask.shape[0])["lw_px"]
-    starts = [r for r, _ in _boxes(start_mask, scale, world, ecfg.min_region_area_px, seal)]
-    goals = [r for r, _ in _boxes(goal_mask, scale, world, ecfg.min_region_area_px, seal)]
+    if ecfg.region_by_agents and agent_pos is not None:
+        starts, goals = _boxes_by_agents(start_mask, goal_mask, scale, world, ecfg, seal, agent_pos)
+    else:
+        starts = [r for r, _ in _boxes(start_mask, scale, world, ecfg.min_region_area_px, seal)]
+        goals = [r for r, _ in _boxes(goal_mask, scale, world, ecfg.min_region_area_px, seal)]
     pairs = []
     if len(starts) == 1 and len(goals) == 1:
         pairs = [(starts[0], goals[0])]
@@ -551,12 +577,6 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
     wall_mask = labels == C_WALL
     obst_mask = labels == C_OBST
 
-    # --- regions -----------------------------------------------------------
-    pairs, unpaired = extract_regions(labels == C_START, labels == C_GOAL, scale, world, ecfg)
-    diag["unpaired_regions"] = unpaired
-    if not pairs:
-        return None
-
     # --- agents ------------------------------------------------------------
     dets = []
     if heat is not None:
@@ -580,6 +600,14 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
         thetas, flags = estimate_headings(agent_mask, centers, r_px, lw_px, hlen_px)
     diag["agent_scores"] = [float(s) for _, _, s in dets]
     diag["heading_uncertain"] = [bool(f) for f in flags]
+
+    # --- regions (after agents: with region_by_agents a box holding one is a start)
+    agent_pos = [px_to_world(W, S, cx, cy) for cx, cy in centers]
+    pairs, unpaired = extract_regions(labels == C_START, labels == C_GOAL, scale, world, ecfg,
+                                      agent_pos)
+    diag["unpaired_regions"] = unpaired
+    if not pairs:
+        return None
 
     # --- static geometry --------------------------------------------------
     obstacles = extract_obstacles(obst_mask, wall_mask, scale, world, ecfg)

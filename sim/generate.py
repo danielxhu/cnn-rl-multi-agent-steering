@@ -68,11 +68,12 @@ def build_parser():
     p.add_argument("--size", type=int, default=512, help="image side in pixels")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--config", default=None, help="JSON file overriding any Config field")
-    p.add_argument("--style", default="render", choices=["render", "sketch", "sketch2"],
+    p.add_argument("--style", default="render", choices=["render", "sketch", "sketch2", "sketch3"],
                    help="render: the default renderer; sketch: hand-drawn, one black pen, "
                         "photographed (sketch.py); sketch2: the same widened to tablet drawings, "
-                        "thin pens and sparse fills (sketch.SKETCH_V2). The jitter flags are "
-                        "ignored for both sketch styles")
+                        "thin pens and sparse fills (sketch.SKETCH_V2); sketch3: v2 plus S / G in "
+                        "many hands, a harsher camera, pen dropouts and stray marks (SKETCH_V3). "
+                        "The jitter flags are ignored for the sketch styles")
 
     g = p.add_argument_group("world")
     g.add_argument("--world", type=float, default=None, help="world side, world units")
