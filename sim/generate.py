@@ -61,7 +61,7 @@ def build_parser():
     p.add_argument("--out", default="data/train", help="output directory")
     p.add_argument("--layout", default="mixed",
                    help="one of %s, or 'mixed' for an even spread of those; 'mixed2' adds the "
-                        "free-form families walls / rooms (~40 %%)" % ", ".join(BUILDERS))
+                        "free-form families walls / rooms (~40 percent)" % ", ".join(BUILDERS))
     p.add_argument("--agents", default="1-6", help="agents per scene, e.g. 3-8 or 4")
     p.add_argument("--obstacles", default="1-4", help="obstacles per scene, e.g. 2-6")
     p.add_argument("--hard-ratio", type=float, default=0.0,

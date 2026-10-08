@@ -22,6 +22,7 @@ import fnmatch
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -123,19 +124,25 @@ def run_all(cmds: list, jobs: int, quiet: bool = True) -> int:
         while pending and len(running) < jobs:
             name, cmd = pending.pop(0)
             print(f"start {name}: {' '.join(cmd)}", flush=True)
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL if quiet else None,
-                                    stderr=subprocess.STDOUT if quiet else None)
-            running.append((name, proc, time.time()))
+            log = tempfile.TemporaryFile() if quiet else None   # stderr, shown on failure
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL if quiet else None, stderr=log)
+            running.append((name, proc, time.time(), log))
         time.sleep(0.5)
         still = []
-        for name, proc, ts in running:
+        for name, proc, ts, log in running:
             rc = proc.poll()
             if rc is None:
-                still.append((name, proc, ts))
+                still.append((name, proc, ts, log))
                 continue
             status = "done" if rc == 0 else f"FAILED (exit {rc})"
             failed += rc != 0
             print(f"{status} {name} in {time.time() - ts:.0f}s", flush=True)
+            if log is not None:
+                log.seek(0)
+                err = log.read().decode(errors="replace").strip()
+                log.close()
+                if rc != 0 and err:
+                    print("\n".join("    " + line for line in err.splitlines()[-15:]), flush=True)
         running = still
     print(f"all datasets finished in {time.time() - t0:.0f}s, {failed} failure(s)")
     return failed
