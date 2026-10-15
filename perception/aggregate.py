@@ -4,6 +4,7 @@
 
 Outputs (DESIGN.md §6.2):
     summary.csv              one row per run × test set with every aggregate metric
+    summary_per_layout.csv   the same, split by layout
     table_res_aug.md         agent F1 / centre error / heading error / scene_usable,
                              rows = resolution, columns = training augmentation,
                              on `test` and `test_aug3`, mean ± std over seeds
@@ -56,13 +57,20 @@ def load_runs(runs_dir: Path) -> list:
         with open(mp) as fh:
             metrics = json.load(fh)
         meta = metrics.get("_meta", {})
+        # `evaluate.py --out` writes metrics away from the run; its config and
+        # log then live next to the checkpoint the metrics name
+        src = d
+        if not (d / "config.json").exists() and meta.get("ckpt"):
+            ck = Path(meta["ckpt"]).parent
+            if (ck / "config.json").exists():
+                src = ck
         cfg = {}
-        if (d / "config.json").exists():
-            with open(d / "config.json") as fh:
+        if (src / "config.json").exists():
+            with open(src / "config.json") as fh:
                 cfg = json.load(fh)
         log = []
-        if (d / "log.csv").exists():
-            with open(d / "log.csv") as fh:
+        if (src / "log.csv").exists():
+            with open(src / "log.csv") as fh:
                 log = list(csv.DictReader(fh))
         runs.append({
             "name": d.name,
@@ -176,6 +184,25 @@ def summary_rows(runs) -> list:
             rows.append({"run": r["name"], "size": r["size"], "aug": r["aug"], "arch": r["arch"],
                          "instance_head": int(r["inst"]), "seed": r["seed"], "set": set_name, **o})
     return rows
+
+
+def per_layout_rows(runs) -> list:
+    """One row per run × test set × layout (the per-layout blocks of metrics.json)."""
+    rows = []
+    for r in runs:
+        for set_name, block in r["sets"].items():
+            for layout, o in block.get("per_layout", {}).items():
+                rows.append({"run": r["name"], "aug": r["aug"], "instance_head": int(r["inst"]),
+                             "seed": r["seed"], "set": set_name, "layout": layout, **o})
+    return rows
+
+
+def _write_csv(path: Path, rows: list, first: list):
+    keys = first + sorted({k for r in rows for k in r if k not in first})
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=keys)
+        w.writeheader()
+        w.writerows(rows)
 
 
 # ----------------------------------------------------------------- figures
@@ -343,12 +370,9 @@ def aggregate_runs(runs_dir, out_dir) -> list:
     out.mkdir(parents=True, exist_ok=True)
 
     rows = summary_rows(runs)
-    keys = ["run", "size", "aug", "arch", "instance_head", "seed", "set"]
-    keys += sorted({k for r in rows for k in r if k not in keys})
-    with open(out / "summary.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=keys)
-        w.writeheader()
-        w.writerows(rows)
+    _write_csv(out / "summary.csv", rows, ["run", "size", "aug", "arch", "instance_head", "seed", "set"])
+    _write_csv(out / "summary_per_layout.csv", per_layout_rows(runs),
+               ["run", "aug", "instance_head", "seed", "set", "layout"])
     (out / "table_res_aug.md").write_text(table_res_aug(runs), encoding="utf-8")
     (out / "table_arch.md").write_text(table_arch(runs), encoding="utf-8")
     fig_spacing_curve(runs, out / "fig_spacing_curve.png")
