@@ -494,3 +494,137 @@ them; sections that state a changed number were updated too.
   free-form families.
 - Datasets `train_sketch4` / `val_sketch4` / `test_sketch4` (seeds 140 / 240 /
   340, `--layout mixed2`); metrics per layout include `walls` and `rooms`.
+
+---
+
+## 9. Sketch v5: rooms, close agents, multiple exits (spec, 15 Oct 2026)
+
+**Why.** Four real drawings parsed with the v4 model (`results/old_drawings_v4/`,
+16 of 17 agents, 12 of 12 obstacles, every real start/goal right) showed the
+remaining failures, all in the shapes v4 never generates:
+
+| Observed on real drawings | Cause | Fix in v5 |
+|---|---|---|
+| A small room formed by walls and the frame was parsed as an S or G box, and the walls around it were lost (drawing 4) | regions are recognised by "rectangle + letter"; v4 has no rooms next to boxes and its letters are large, so "a rectangle" alone is enough | §9.1 rooms and decoy rooms; smaller, thinner letters |
+| Two agents drawn touching: one detected (drawing 4) | v4 caps every drawn agent at 0.42 × the nearest neighbour's distance, so drawn agents never touch; heat peaks have σ = the *nominal* radius and blur together for small, close agents; heat NMS keeps peaks ≥ 1.6 nominal radii apart | §9.1 close agents; §9.2 sharper, size-aware heat targets and size-aware NMS |
+| Agents crowded in a narrow box score 0.53–0.54 (threshold 0.4) | same as above | same; re-tune thresholds |
+| One S with two G: the second G was dropped (drawing 2) | the extractor pairs boxes one-to-one | §9.3 multiple exits; §9.4 the simulator accepts any exit |
+| Thin, light wall lines partly missed (drawings 2–4) | lines under one pixel at 256 | **out of scope**: the author draws with a ~1 mm marker |
+
+Decisions (author, 15 Oct): one S may serve several G and several S may
+share one G; **an agent succeeds by reaching any G** (multi-exit evacuation).
+The author's own free drawings are **not** labelled and do not enter
+training; they stay a diagnostic set, like `results/old_drawings_v4/`.
+
+### 9.1 Generator: `sim/sketch.py` v5 and new layouts (`--style sketch5`, `--layout mixed3`)
+
+v1–v4 must stay pixel-identical (hash 14 scenes per style before and after,
+as for v2–v4).
+
+- **Rooms next to boxes.** A new free-form family (`boxrooms`, not in
+  `LAYOUTS`): 1–4 small rectangular rooms (sides 10–30 units) made of walls,
+  often sharing walls with the frame, each with one or two doors; S and G
+  boxes are placed **inside some rooms and outside others**, and at least
+  one room in two scenes holds **no box at all** (a decoy). Rooms must not
+  make the scene unsolvable.
+- **Letters**: size 0.25–1.0 of the largest that fits (v4: 0.4–1.0), stroke
+  as thin as 0.5 × the pen.
+- **Close agents**: in 40 % of scenes, agents in a start box are placed at the
+  generator's hard spacing (`2R + hard_gap`), and the drawn-size cap rises
+  from 0.42 to **0.6 × the nearest neighbour's distance**, so drawn circles
+  may touch or overlap slightly. Up to 8 agents per box. Agents' *world*
+  positions still satisfy the simulator's ≥ 2R spacing; only the drawing
+  touches.
+- **Multiple starts and exits**: free-form scenes get k ∈ {1, 2, 3} start
+  boxes and m ∈ {1, 2, 3} exit boxes in any combination (k = m = 1 in a
+  third of scenes). Agents are only ever in start boxes. Every agent must be
+  able to reach at least one exit (solvability per agent, any exit).
+- **JSON**: every agent records its drawn radius (`"radius"`, world units);
+  scenes with several boxes record `"starts"` and `"exits"` (lists of boxes).
+  Single-box scenes keep `start_region` / `goal_region` as now.
+- `MIXES["mixed3"]` = `mixed2` + 2 × `boxrooms` + multi-box variants of
+  `walls` / `rooms`.
+
+### 9.2 Perception model
+
+- **Heat targets** (`targets.py`): σ = `heat_sigma` × the agent's **drawn**
+  radius when the JSON has `"radius"`, else the nominal radius as now.
+  `TrainConfig.heat_sigma` default 1.0 (E5 and v4 runs unchanged); v5
+  trains with **0.5**.
+- **Heat NMS** (`extract.py`): minimum peak distance in heat mode =
+  `ExtractConfig.heat_nms_factor` × nominal radius, default = `nms_factor`
+  (unchanged behaviour); v5 uses **0.6** and `--tune-extract` grids it
+  together with `heat_thresh`.
+- Train: `--init` the v4 model (`sketch4_ft_seed0/ckpt_best.pt`), train on
+  `train_sketch5 train_aug3`, val `val_sketch5`, 256 px, instance head,
+  `--wall-mode lines`, 30 epochs, lr 5e-4, `--heat-sigma 0.5`,
+  `--goal-mode exits` (§9.3). ≈ 1.5 h on the GTX 1070.
+
+### 9.3 Extractor: exits instead of pairs
+
+`ExtractConfig.goal_mode`: `"pairs"` (default, current behaviour, E5
+unchanged) or `"exits"`:
+
+- every start box that **contains at least one parsed agent** is a start;
+  start boxes with no agent are dropped and counted in
+  `diagnostics["dropped_empty_starts"]` (this removes the fake start of
+  drawing 4);
+- every goal box is an exit; no pairing; unpaired boxes are not an error;
+- the parsed `Scene` carries `starts` and `exits`; agents carry no
+  `goal_region`, so `goal_for` returns the exit set (§9.4);
+- a parse fails only when there is no agent or no exit.
+
+`metrics.py`: a `region_set_ok` metric (every true start box and every true
+exit matched one-to-one by a parsed box of the same kind, IoU > 0.5, no extra
+boxes). In `goal_mode="exits"`, `scene_usable` uses it instead of
+`group_pairing_ok`. Ground-truth scenes with explicit per-agent goals
+(`crossing`) are scored as exit sets in this mode — a hand-drawn scene cannot
+express pairing, so parsed scenes always mean "any exit".
+
+### 9.4 Simulator: any exit counts (`sim/scene.py`, `sim/physics.py`)
+
+- `scene.RegionSet(regions)`: `contains` = any, `distance_to` = min,
+  `nearest_point` = the nearest point of the nearest member — the same
+  interface as `Region`, so `physics.py` needs no change in its goal logic.
+- `Scene.starts` / `Scene.exits` (optional lists). `Scene.goal_for(agent)`:
+  the agent's own `goal_region` if set (crossing keeps its two groups), else
+  `RegionSet(exits)` if `exits` is set, else `goal_region` (every existing
+  scene).
+- Observation (51 numbers) unchanged in size and layout: goal distance and
+  bearing now refer to the nearest exit. Reward progress uses the same
+  distance. `stats()` unchanged (an agent's outcome is `goal` on entering any
+  exit).
+- Rendering (`render.py`, `sketch.py`) draws every start and exit;
+  `reachability` checks each agent against its own goal set.
+- Every existing layout produces exactly the scenes it did before (hashes),
+  and `sim` tests stay green; this is what keeps E5 and later RL comparable.
+
+### 9.5 Datasets
+
+`train_sketch5` / `val_sketch5` / `test_sketch5`: 5000 / 500 / 1000, seeds
+150 / 250 / 350, `--style sketch5 --layout mixed3`.
+
+### 9.6 Evaluation
+
+One table, v4 model vs v5 model, on `test`, `test_aug3`, `test_sketch4`,
+`test_sketch5` (rendered images must not regress; v4-style drawings must not
+regress), plus per-layout rows for the new families. Then both models on the
+four drawings in `results/old_drawings_v4/input` (and any the author adds),
+with overlays and clean re-renders side by side for inspection.
+
+Expected: fake boxes from rooms mostly gone as long as letters are legible;
+touching agents mostly separated, heavy overlap (one circle over another)
+still ambiguous; low-confidence agents rarer; one-S-many-G and many-S-one-G
+parsed and simulated as exits. Thin lines are not addressed.
+
+### 9.7 Tests to add
+
+| Test | Checks |
+|---|---|
+| `sim`: v5 determinism; v1–v4 hashes unchanged | as for v2–v4 |
+| `sim`: `test_region_set_goal` | an agent reaches the farther of two exits → outcome `goal`; observation points at the nearer exit |
+| `sim`: `test_existing_layouts_unchanged_by_exits` | every `LAYOUTS` family and `mixed2` scene hashes as before |
+| `sim`: `test_boxrooms_valid` | solvable for every agent; decoy rooms present; boxes inside and outside rooms |
+| `perception`: `test_sketch5_close_agents_labels` | touching drawn agents still give one heat peak each at the JSON centres |
+| `perception`: `test_exits_mode_drops_empty_start` | a start box without agents is dropped; two exits both kept; agent goal is the exit set |
+| `perception`: `test_heat_nms_separates_touching` | two heat peaks 1.2 nominal radii apart are both detected with `heat_nms_factor` 0.6 |
