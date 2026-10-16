@@ -471,25 +471,39 @@ def test_multi_root_training_set():
 
 _SKETCHES = []
 _SKETCHES_BY_STYLE = {}
-SKETCH_STYLE_NAMES = ("sketch", "sketch2", "sketch3", "sketch4")
+SKETCH_STYLE_NAMES = ("sketch", "sketch2", "sketch3", "sketch4", "sketch5")
 
 
 def _sketch_scenes(cfg, style="sketch"):
     """One sketch scene per layout (2–8 agents), with the per-agent ring and
-    tail maps the renderer drew; rendered once per style and cached across tests."""
+    tail maps the renderer drew; rendered once per style and cached across tests.
+    v4 adds the free-form layouts; v5 adds the multi-box ones too, and packs
+    every second scene's start boxes (close agents)."""
     cache = _SKETCHES if style == "sketch" else _SKETCHES_BY_STYLE.setdefault(style, [])
     if not cache:
-        from layouts import FREE_LAYOUTS
+        from layouts import FREE_LAYOUTS, MULTI_LAYOUTS
         from sketch import STYLES, sketch
         rng = np.random.default_rng(77)
-        for k, layout in enumerate(LAYOUTS + (FREE_LAYOUTS if style == "sketch4" else [])):
+        extra = {"sketch4": FREE_LAYOUTS, "sketch5": FREE_LAYOUTS + MULTI_LAYOUTS * 2}.get(style, [])
+        for k, layout in enumerate(LAYOUTS + extra):
             s = random_scene(rng, cfg, layout=layout, n_agents=int(rng.integers(2, 9)),
-                             n_obstacles=int(rng.integers(1, 5)))
+                             n_obstacles=int(rng.integers(1, 5)),
+                             close=style == "sketch5" and k % 2 == 0)
             assert s is not None, f"{layout}: sampler gave up"
             s.seed = 9000 + k
             img, lab, drawn, parts = sketch(s, cfg, parts=True, style=STYLES[style])
             cache.append((drawn, lab, parts))
     return cache
+
+
+def _touches(drawn, k, cfg) -> bool:
+    """Whether agent k's drawn ring may touch another's (v5 only, which records
+    drawn radii: radii + 2 units apart or closer). Older styles never touch."""
+    a = drawn.agents[k]
+    if a.radius is None:
+        return False
+    return any(math.dist(a.pos, b.pos) < a.radius + b.radius + 2.0
+               for j, b in enumerate(drawn.agents) if j != k)
 
 
 def _circle_fit(xs, ys):
@@ -523,13 +537,22 @@ def test_sketch_json_matches_drawing():
             cx, cy = world_to_px(cfg.world, cfg.img_size, *a.pos)
             ys, xs = np.nonzero(rings == k + 1)
             fx, fy = _circle_fit(xs.astype(float), ys.astype(float))
+            if _touches(drawn, k, cfg):                         # v5: the drawn curve itself
+                q = parts["ring_pts"][k]
+                fx, fy = _circle_fit(q[:, 0], q[:, 1])
             r_draw = float(np.hypot(xs - fx, ys - fy).mean())
             err = math.hypot(fx - cx, fy - cy)
             assert err <= max(1.25, 0.06 * r_draw), \
                 f"{drawn.layout} agent {k}: JSON centre {err:.2f} px from the drawn ring (r {r_draw:.1f})"
             raw = math.hypot(xs.mean() - cx, ys.mean() - cy)
-            assert raw <= max(2.5, 0.25 * r_draw), f"{drawn.layout} agent {k}: ring pixel centroid {raw:.2f} px away"
+            # (not where rings touch, v5: the neighbour's ring is drawn over part of this one
+            # in the ring map, which moves the raw centroid but not the circle fit)
+            if not _touches(drawn, k, cfg):
+                assert raw <= max(2.5, 0.25 * r_draw), \
+                    f"{drawn.layout} agent {k}: ring pixel centroid {raw:.2f} px away"
             ty, tx = np.nonzero(tails == k + 1)
+            if _touches(drawn, k, cfg):                         # v5: the drawn curve itself
+                tx, ty = parts["tail_pts"][k][:, 0], parts["tail_pts"][k][:, 1]
             tail_len = float(np.hypot(tx - cx, ty - cy).max())
             P = np.c_[tx, -ty].astype(float)                    # y up, like the heading
             mu = P.mean(0)
@@ -545,11 +568,10 @@ def test_sketch_json_matches_drawing():
         for o in drawn.obstacles:
             cx, cy = world_to_px(cfg.world, cfg.img_size, *o.c)
             assert lab[int(round(cy)), int(round(cx))] == C_OBST, f"{drawn.layout}: obstacle centre off its label"
-        for side, cls in ((0, C_START), (1, C_GOAL)):
+        for boxes, cls in ((drawn.start_boxes(), C_START), (drawn.exit_boxes(), C_GOAL)):
             ys, xs = np.nonzero(lab == cls)
             inside = np.zeros(len(xs), bool)
-            for g in drawn.groups:
-                reg = g[side]
+            for reg in boxes:
                 x0, y0 = world_to_px(cfg.world, cfg.img_size, reg.x0, reg.y1)
                 x1, y1 = world_to_px(cfg.world, cfg.img_size, reg.x1, reg.y0)
                 assert x1 - x0 > 20 and y1 - y0 > 20, f"{drawn.layout}: degenerate region {reg}"
@@ -583,21 +605,30 @@ def test_sketch_instance_targets_align():
 def test_extract_on_sketch_labels():
     """Extraction on sketch ground-truth labels with ground-truth heat and
     direction maps: every agent within 1.0 unit and 10°, obstacle count exact."""
+    from runconfig import ExtractConfig
     cfg = Config()
     world = _world(cfg)
+    # v5: its own training targets and extractor (σ 0.5 x drawn radius, NMS 0.6, exits)
+    v5 = ExtractConfig(heat_nms_factor=0.6, goal_mode="exits")
     for size in (512, 256):
-        for drawn, lab, _ in [x for st in SKETCH_STYLE_NAMES for x in _sketch_scenes(cfg, st)]:
-            heat, dirs, _ = instance_targets(drawn, world, size)
-            p = extract(_downsample(lab, size), world, heat=heat[0], dir=dirs)
-            assert p is not None, f"{drawn.layout} @{size}: parse failed"
-            pairs = _match(drawn, p, tol=1.0)
-            assert len(pairs) == len(drawn.agents) == len(p.scene.agents), \
-                f"{drawn.layout} @{size}: {len(pairs)} of {len(drawn.agents)} agents matched"
-            for gi, pi in pairs:
-                err = heading_err_deg(p.scene.agents[pi].heading, drawn.agents[gi].heading)
-                assert err < 10.0, f"{drawn.layout} @{size}: heading error {err:.1f}°"
-            assert len(p.scene.obstacles) == len(drawn.obstacles), \
-                f"{drawn.layout} @{size}: {len(p.scene.obstacles)} obstacles vs {len(drawn.obstacles)}"
+        for st in SKETCH_STYLE_NAMES:
+            for drawn, lab, _ in _sketch_scenes(cfg, st):
+                heat, dirs, _ = instance_targets(drawn, world, size, 0.5 if st == "sketch5" else 1.0)
+                p = extract(_downsample(lab, size), world, heat=heat[0], dir=dirs,
+                            ecfg=v5 if st == "sketch5" else ExtractConfig())
+                tag = f"{st} {drawn.layout} @{size}"
+                assert p is not None, f"{tag}: parse failed"
+                pairs = _match(drawn, p, tol=1.0)
+                assert len(pairs) == len(drawn.agents) == len(p.scene.agents), \
+                    f"{tag}: {len(pairs)} of {len(drawn.agents)} agents matched"
+                for gi, pi in pairs:
+                    err = heading_err_deg(p.scene.agents[pi].heading, drawn.agents[gi].heading)
+                    assert err < 10.0, f"{tag}: heading error {err:.1f}°"
+                assert len(p.scene.obstacles) == len(drawn.obstacles), \
+                    f"{tag}: {len(p.scene.obstacles)} obstacles vs {len(drawn.obstacles)}"
+                if st == "sketch5":                    # every start and exit, as a set
+                    from metrics import region_set_ok
+                    assert region_set_ok(drawn, p.scene), f"{tag}: start / exit boxes not recovered"
 
 
 @test
@@ -680,6 +711,115 @@ def test_region_by_agents_fixes_a_misread_letter():
                 continue                                   # an empty start keeps its (wrong) letter
             assert max(region_iou(gs, ps) for ps, _ in p.scene.groups) > 0.95, f"{layout}: start not recovered"
             assert max(region_iou(gg, pg) for _, pg in p.scene.groups) > 0.95, f"{layout}: goal lost"
+
+
+# ----------------------------------------- sketch v5: close agents, exits
+
+@test
+def test_sketch5_close_agents_labels():
+    """Touching drawn agents (v5 close scenes) still give one heat peak each, at
+    the JSON centres, with v5's targets (σ = 0.5 x drawn radius) and NMS (0.6)."""
+    from extract import detect_agents_heat
+    from runconfig import ExtractConfig
+    from sketch import SKETCH_V5, sketch
+    cfg = Config()
+    world = _world(cfg)
+    rng = np.random.default_rng(50)
+    ecfg = ExtractConfig(heat_nms_factor=0.6)
+    touching = 0
+    for k in range(6):
+        s = random_scene(rng, cfg, layout="open" if k % 2 else "boxrooms", n_agents=8, n_obstacles=1,
+                         close=True)
+        s.seed = 600 + k
+        _, lab, drawn, parts = sketch(s, cfg, style=SKETCH_V5, parts=True)
+        rings = parts["rings"]
+        grown = [cv2.dilate((rings == i + 1).astype(np.uint8), np.ones((3, 3), np.uint8))
+                 for i in range(len(drawn.agents))]
+        touching += sum(int((grown[i] & grown[j]).any()) for i in range(len(grown))
+                        for j in range(i + 1, len(grown)))
+        for size in (512, 256):
+            heat, _, _ = instance_targets(drawn, world, size, heat_sigma=0.5)
+            r_px = cfg.agent_radius * size / cfg.world
+            dets = detect_agents_heat(heat[0], r_px, ecfg)
+            centres = [world_to_px(cfg.world, size, *a.pos) for a in drawn.agents]
+            assert len(dets) == len(centres), f"scene {k} @{size}: {len(dets)} peaks for {len(centres)} agents"
+            pairs = match_points(centres, [(x, y) for x, y, _ in dets], 1.0)
+            assert len(pairs) == len(centres), f"scene {k} @{size}: a peak is off its JSON centre"
+    assert touching >= 6, f"only {touching} touching pairs of drawn rings: the test checks nothing"
+
+
+@test
+def test_exits_mode_drops_empty_start():
+    """goal_mode="exits": a start box without agents is dropped (the fake start
+    of a room), both exits are kept, the agents' goal is the exit set, and the
+    parse is scored by region_set_ok. "pairs" mode is unchanged."""
+    from metrics import region_set_ok
+    from runconfig import ExtractConfig
+    from scene import RegionSet
+    cfg = Config()
+    world = _world(cfg)
+    start, empty = Region(8, 40, 22, 60), Region(8, 75, 22, 92)
+    g1, g2 = Region(80, 10, 94, 25), Region(80, 70, 94, 88)
+    s = Scene(walls=boundary_walls(cfg.world), agents=[Agent((15.0, 45.0), 0.0), Agent((15.0, 55.0), 0.3)],
+              start_region=start, goal_region=g1, starts=[start, empty], exits=[g1, g2])
+    _, lab = render(s, cfg, fill_unreachable=False)
+    heat, dirs, _ = instance_targets(s, world, cfg.img_size)
+    p = extract(lab, world, heat=heat[0], dir=dirs, ecfg=ExtractConfig(goal_mode="exits"))
+    assert p is not None and p.diagnostics["dropped_empty_starts"] == 1
+    assert len(p.scene.starts) == 1 and region_iou(p.scene.starts[0], start) > 0.9
+    assert len(p.scene.exits) == 2 and p.scene.groups == []
+    goal = p.scene.goal_for(p.scene.agents[0])
+    assert isinstance(goal, RegionSet) and len(goal) == 2 and all(a.goal_region is None for a in p.scene.agents)
+    assert region_set_ok(s, p.scene), "the empty start box is no start in the ground truth either"
+    m, _ = scene_metrics(s, lab, p, lab, world, 512, goal_mode="exits")
+    assert m["region_set_ok"] == 1.0 and m["scene_usable"] == 1.0 and math.isnan(m["group_pairing_ok"])
+    back = parsed_from_json(parsed_to_json(p, "t"))
+    assert len(back.scene.exits) == 2 and isinstance(back.scene.goal_for(back.scene.agents[0]), RegionSet)
+    sim = Simulator(p.scene, sim_config(cfg, p))
+    assert sim.reset().shape == (2, cfg.obs_dim)
+    # no exit at all: a parse failure; pairs mode still pairs one-to-one
+    lab_no_goal = lab.copy()
+    lab_no_goal[lab_no_goal == C_GOAL] = 0
+    assert extract(lab_no_goal, world, heat=heat[0], dir=dirs, ecfg=ExtractConfig(goal_mode="exits")) is None
+    pp = extract(lab, world, heat=heat[0], dir=dirs)
+    assert pp.scene.exits is None and len(pp.scene.groups) >= 1 and "dropped_empty_starts" not in pp.diagnostics
+    # crossing ground truth (per-agent goals) scored as exit sets
+    c = random_scene(np.random.default_rng(3), cfg, layout="crossing", n_agents=6, n_obstacles=2)
+    _, lab_c = render(c, cfg)
+    heat, dirs, _ = instance_targets(c, world, cfg.img_size)
+    pc = extract(lab_c, world, heat=heat[0], dir=dirs, ecfg=ExtractConfig(goal_mode="exits"))
+    mc, _ = scene_metrics(c, lab_c, pc, lab_c, world, 512, goal_mode="exits")
+    assert len(pc.scene.exits) == 2 and mc["region_set_ok"] == 1.0 and mc["scene_usable"] == 1.0
+
+
+@test
+def test_heat_nms_separates_touching():
+    """Two heat peaks 1.2 nominal radii apart: one detection with the default NMS
+    (1.6 radii), both with heat_nms_factor 0.6; the default is unchanged."""
+    from extract import detect_agents_heat
+    from runconfig import ExtractConfig
+    cfg = Config()
+    world = _world(cfg)
+    assert ExtractConfig().heat_nms_factor is None and ExtractConfig().goal_mode == "pairs"
+    for size in (512, 256):
+        r = cfg.agent_radius
+        s = Scene(agents=[Agent((50.0, 50.0), 0.0, radius=0.6 * r),
+                          Agent((50.0 + 1.2 * r, 50.0), 0.0, radius=0.6 * r)])
+        heat, _, _ = instance_targets(s, world, size, heat_sigma=0.5)
+        r_px = r * size / cfg.world
+        assert len(detect_agents_heat(heat[0], r_px, ExtractConfig())) == 1
+        dets = detect_agents_heat(heat[0], r_px, ExtractConfig(heat_nms_factor=0.6))
+        assert len(dets) == 2, f"@{size}: {len(dets)} detections"
+        want = [world_to_px(cfg.world, size, *a.pos) for a in s.agents]
+        assert len(match_points(want, [(x, y) for x, y, _ in dets], 0.75)) == 2
+    # targets: heat_sigma 1 and no drawn radius is the E5 target; a drawn radius sharpens it
+    s = random_scene(np.random.default_rng(1), cfg, layout="open", n_agents=4, n_obstacles=1)
+    h1 = instance_targets(s, world, 256)[0]
+    assert np.array_equal(h1, instance_targets(s, world, 256, 1.0)[0])
+    for a in s.agents:
+        a.radius = cfg.agent_radius
+    assert np.array_equal(h1, instance_targets(s, world, 256, 1.0)[0])
+    assert instance_targets(s, world, 256, 0.5)[0].sum() < 0.3 * h1.sum()
 
 
 def main():

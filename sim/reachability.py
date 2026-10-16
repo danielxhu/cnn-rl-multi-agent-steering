@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 from geometry import point_seg_dist
+from scene import members
 
 _GRID_CACHE = {}
 
@@ -93,6 +94,14 @@ def _labels_in_region(lab, cfg, region):
     return set(int(v) for v in vals if v > 0)
 
 
+def _labels_in_goal(lab, cfg, goal):
+    """Labels touching a Region, or any member of a RegionSet (an exit set)."""
+    out = set()
+    for r in members(goal):
+        out |= _labels_in_region(lab, cfg, r)
+    return out
+
+
 def reachable_labels(cfg, scene, radius, clear=None, target=None):
     """Component labels of the free space touching the target region."""
     if clear is None:
@@ -114,9 +123,9 @@ def is_solvable(cfg, scene, radius=None, clear=None) -> bool:
         goal = scene.goal_for(a)
         if goal is None:
             return False
-        key = tuple(goal.as_list())
+        key = tuple(tuple(r.as_list()) for r in members(goal))
         if key not in cache:
-            cache[key] = _labels_in_region(lab, cfg, goal)
+            cache[key] = _labels_in_goal(lab, cfg, goal)
         iy, ix = cell_of(cfg, a.pos)
         if int(lab[iy, ix]) not in cache[key]:
             return False
@@ -126,8 +135,19 @@ def is_solvable(cfg, scene, radius=None, clear=None) -> bool:
 def regions_connected(cfg, scene, radius, clear=None) -> bool:
     """Whether start_region and goal_region are linked for a disk of `radius`.
 
-    Used for bottleneck search, where per-agent placement is irrelevant.
+    Used for bottleneck search, where per-agent placement is irrelevant. A scene
+    with several boxes (`starts` / `exits`) is linked when every start box
+    reaches at least one exit.
     """
+    if scene.starts or scene.exits:
+        if clear is None:
+            clear = clearance(cfg, occupancy(cfg, scene))
+        lab = _labels(free_mask(clear, radius))
+        exits = set()
+        for g in scene.exit_boxes():
+            exits |= _labels_in_region(lab, cfg, g)
+        return bool(scene.start_boxes()) and all(
+            _labels_in_region(lab, cfg, s) & exits for s in scene.start_boxes())
     if scene.start_region is None or scene.goal_region is None:
         return is_solvable(cfg, scene, radius, clear)
     if clear is None:
@@ -181,7 +201,8 @@ def unreachable_free(cfg, scene, clear=None, anchor=None) -> np.ndarray:
     lab = _labels(free)
     anchor = anchor or scene.start_region or scene.goal_region
     keep = set()
-    for reg in filter(None, [anchor, scene.goal_region, scene.start_region]):
+    boxes = list(scene.starts or []) + list(scene.exits or [])     # several boxes: every one
+    for reg in filter(None, [anchor, scene.goal_region, scene.start_region] + boxes):
         keep |= _labels_in_region(lab, cfg, reg)
     for a in scene.agents:
         iy, ix = cell_of(cfg, a.pos)

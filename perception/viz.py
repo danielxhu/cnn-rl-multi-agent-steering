@@ -52,8 +52,11 @@ def draw_parsed(image_uint8, parsed, gt_scene=None, width=2) -> Image.Image:
 
     for (ax, ay), (bx, by) in sc.walls:
         d.line([px(ax, ay), px(bx, by)], fill=COL_WALL, width=width)
-    for start, goal in sc.groups:
-        for reg, col in ((start, COL_START), (goal, COL_GOAL)):
+    boxes = [(r, COL_START) for r in sc.start_boxes()] + [(r, COL_GOAL) for r in sc.exit_boxes()]
+    if sc.starts is None and sc.exits is None:          # pairs: exactly the parsed groups
+        boxes = [(r, c) for start, goal in sc.groups for r, c in ((start, COL_START), (goal, COL_GOAL))]
+    for reg, col in boxes:
+        if reg is not None:
             x0, y0 = px(reg.x0, reg.y1)
             x1, y1 = px(reg.x1, reg.y0)
             d.rectangle([x0, y0, x1, y1], outline=col, width=width)

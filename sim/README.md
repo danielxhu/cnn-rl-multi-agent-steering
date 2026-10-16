@@ -66,6 +66,11 @@ drawn; it follows from the agent pose and the constants in `dataset.json`.
 - `groups`: every (start, goal) pair; only `crossing` has two.
 - `bottleneck`: diameter of the widest disk that can travel start → goal.
   A free difficulty label.
+- `starts` / `exits` (only in scenes with several boxes, `--layout mixed3`):
+  every start box and every exit box; `groups` is then empty and
+  `start_region` / `goal_region` are the first of each. An agent without its
+  own `goal_region` succeeds by reaching **any** exit.
+- `radius` on an agent (only `--style sketch5`): the radius it was drawn with.
 - World y increases **upward**; image row 0 is the top.
 
 ---
@@ -90,9 +95,22 @@ changes; `--layout mixed2` adds them (~40 % of scenes):
 | `walls` | 0–6 random walls, some diagonal or attached to the boundary; start / goal anywhere | layouts nobody planned |
 | `rooms` | one or two walls with doors, 2–4 rooms; start and goal in different rooms | finding the door |
 
+Three multi-box families (sketch v5, `perception/DESIGN_SKETCH.md` §9) are
+outside both lists; `--layout mixed3` = `mixed2` plus 2 × each of them (a
+third of scenes). Each has 1–3 start and 1–3 exit boxes (one of each in a
+third of scenes, then written in the single-box form):
+
+| Layout | Geometry | Tests |
+|---|---|---|
+| `boxrooms` | 1–4 small rooms of walls (sides 10–30, often against the frame, 1–2 doors); boxes inside some rooms and outside others; in 60 % of scenes a room with no box | a room is not a box |
+| `walls_multi` | `walls` with several boxes | any exit counts |
+| `rooms_multi` | `rooms` with several boxes | any exit counts |
+
 Every scene is validated before it is written: start must reach goal for a
 disk of the agent's radius, and the narrowest passage must exceed
-`min_bottleneck`. Failures are resampled, never relaxed.
+`min_bottleneck`. With several boxes every agent must reach some exit and every
+exit must be reachable; the bottleneck is the widest disk with which every
+start box reaches an exit. Failures are resampled, never relaxed.
 
 Greedy "turn toward the goal at full speed" success rate, 20 scenes per layout:
 
@@ -179,7 +197,8 @@ print(sim.stats())
 
 **Observation** (51 per agent, normalised, no absolute position): 16 FOV
 sectors × nearest {obstacle, wall, agent} distance, then goal distance, goal
-bearing, own speed.
+bearing, own speed. In a scene with `exits` the goal is the nearest exit
+(`scene.RegionSet`); arriving in any exit counts as `goal`.
 
 **Action:** `(turn, speed)`, `turn ∈ [-1, 1]` × `max_turn_deg`, `speed ∈ [0, 1]` × `max_speed`.
 

@@ -3,6 +3,8 @@
     python evaluate.py --ckpt runs/dev_s256/ckpt_best.pt \\
                        --data data/test data/test_aug3 data/test_spacing data/test_dense
     python evaluate.py --ckpt ... --data data/val --tune-extract      # grid over thresholds
+    python evaluate.py --ckpt ... --data data/test_sketch5 --goal-mode exits --heat-thresh 0.3
+                                                                       # override the run's extractor
 
 A directory that holds no scenes itself but sub-directories that do (for
 example ``data/test_spacing/gap*``) expands to one test set per sub-directory,
@@ -16,7 +18,10 @@ Outputs, next to the checkpoint unless ``--out`` is given (DESIGN.md §3.4, §5)
     agent_rows.csv   one row per ground-truth agent (the raw material of the spacing curve)
     fig_spacing_<set>.png, fig_examples_<set>.png
 
-Every set is evaluated at the checkpoint's own resolution.
+Every set is evaluated at the checkpoint's own resolution, with the run's own
+extractor settings unless ``--goal-mode`` / ``--heat-thresh`` /
+``--heat-nms-factor`` / ``--region-by-agents`` override them (for instance a
+tuned threshold, or the v4 model scored as exit sets on sketch v5 scenes).
 """
 from __future__ import annotations
 
@@ -83,7 +88,7 @@ def score_scene(ds: SceneDataset, i: int, pred: dict, ecfg, name: str):
     """Extract + score one prediction -> (scene row, agent rows)."""
     parsed = extract(pred["labels"], ds.worlds[i], pred.get("heat"), pred.get("dir"), ecfg)
     m, ar = scene_metrics(ds.scenes[i], ds.labels512(i), parsed, pred["labels"], ds.worlds[i],
-                          ds.size, sid=ds.ids[i])
+                          ds.size, sid=ds.ids[i], goal_mode=ecfg.goal_mode)
     if not ds.labels_exact:
         m.update({k: math.nan for k in LABEL_MAP_KEYS})
     for r in ar:
@@ -165,8 +170,19 @@ def examples_figure(ds: SceneDataset, kept: dict, ecfg, path: Path):
 
 # --------------------------------------------------------------- evaluate
 
-def evaluate(ckpt, data_dirs, out_dir=None, figures=True, limit=None, device=None, batch=None) -> dict:
+def extract_overrides(ecfg, goal_mode=None, heat_thresh=None, heat_nms_factor=None,
+                      region_by_agents=None):
+    """The run's ExtractConfig with the given (non-None) fields replaced."""
+    over = {k: v for k, v in dict(goal_mode=goal_mode, heat_thresh=heat_thresh,
+                                  heat_nms_factor=heat_nms_factor,
+                                  region_by_agents=region_by_agents).items() if v is not None}
+    return replace(ecfg, **over) if over else ecfg
+
+
+def evaluate(ckpt, data_dirs, out_dir=None, figures=True, limit=None, device=None, batch=None,
+             overrides=None) -> dict:
     pr = Predictor(ckpt, device)
+    pr.ecfg = extract_overrides(pr.ecfg, **(overrides or {}))
     batch = batch or default_batch(pr.size)
     out_dir = Path(out_dir or Path(ckpt).parent)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -212,34 +228,56 @@ def evaluate(ckpt, data_dirs, out_dir=None, figures=True, limit=None, device=Non
     return metrics
 
 
+HEAT_NMS_GRID = [0.5, 0.6, 0.8, 1.0, 1.2]
+
+
 def tune_extract(ckpt, data_dir, out_dir=None, ring_grid=None, heat_grid=None, limit=None,
-                 device=None, batch=None) -> dict:
-    """Grid over ring_thresh / heat_thresh on one set; predictions are computed once."""
+                 device=None, batch=None, nms_grid=None, overrides=None) -> dict:
+    """Grid over ring_thresh / heat_thresh (/ heat_nms_factor) on one set; predictions
+    are computed once.
+
+    heat_nms_factor is gridded (``HEAT_NMS_GRID``) for runs that set it (sketch v5)
+    or with ``nms_grid``; other runs keep their one value, so their grid is as
+    before. Ring thresholds only matter for the heat fallback in such runs, so
+    their ring grid is the run's own value unless ``ring_grid`` is given."""
     pr = Predictor(ckpt, device)
+    pr.ecfg = extract_overrides(pr.ecfg, **(overrides or {}))
     batch = batch or default_batch(pr.size)
     out_dir = Path(out_dir or Path(ckpt).parent)
     name, path = expand_data_dirs([data_dir])[0]
     ds = SceneDataset(path, pr.size, limit=limit)
     preds = predict_dataset(pr.model, ds, range(len(ds)), pr.device, batch)
-    ring_grid = ring_grid or [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7]
-    heat_grid = heat_grid or ([0.2, 0.3, 0.4, 0.5, 0.6] if "heat" in preds[0] else [pr.ecfg.heat_thresh])
+    heat = "heat" in preds[0]
+    sized = heat and (pr.ecfg.heat_nms_factor is not None or nms_grid is not None)
+    ring_grid = ring_grid or ([pr.ecfg.ring_thresh] if sized
+                             else [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7])
+    heat_grid = heat_grid or ([0.2, 0.3, 0.4, 0.5, 0.6] if heat else [pr.ecfg.heat_thresh])
+    nms_grid = nms_grid or (HEAT_NMS_GRID if sized else [pr.ecfg.heat_nms_factor])
     results = []
     for rt in ring_grid:
         for ht in heat_grid:
-            ecfg = replace(pr.ecfg, ring_thresh=rt, heat_thresh=ht)
-            rows, arows = score_predictions(ds, preds, ecfg, name)
-            o = aggregate(rows, arows)["overall"]
-            results.append({"ring_thresh": rt, "heat_thresh": ht, "agent_f1": o["agent_f1"],
-                            "agent_precision": o["agent_precision"], "agent_recall": o["agent_recall"],
-                            "agent_center_err": o["agent_center_err"], "scene_usable": o["scene_usable"]})
-            print(f"ring {rt:.2f} heat {ht:.2f}: f1 {o['agent_f1']:.4f} P {o['agent_precision']:.3f} "
-                  f"R {o['agent_recall']:.3f} usable {o['scene_usable']:.3f}")
+            for nf in nms_grid:
+                ecfg = replace(pr.ecfg, ring_thresh=rt, heat_thresh=ht, heat_nms_factor=nf)
+                rows, arows = score_predictions(ds, preds, ecfg, name)
+                o = aggregate(rows, arows)["overall"]
+                r = {"ring_thresh": rt, "heat_thresh": ht, "agent_f1": o["agent_f1"],
+                     "agent_precision": o["agent_precision"], "agent_recall": o["agent_recall"],
+                     "agent_center_err": o["agent_center_err"], "scene_usable": o["scene_usable"]}
+                nms_txt = ""
+                if sized:
+                    r["heat_nms_factor"] = nf
+                    nms_txt = f" nms {nf:.2f}"
+                results.append(r)
+                print(f"ring {rt:.2f} heat {ht:.2f}{nms_txt}: f1 {o['agent_f1']:.4f} "
+                      f"P {o['agent_precision']:.3f} R {o['agent_recall']:.3f} usable {o['scene_usable']:.3f}")
     best = max(results, key=lambda r: (r["agent_f1"] if not math.isnan(r["agent_f1"]) else -1))
-    rec = {"set": name, "n_scenes": len(ds), "results": results, "best": best}
+    rec = {"set": name, "n_scenes": len(ds), "goal_mode": pr.ecfg.goal_mode, "results": results,
+           "best": best}
     with open(out_dir / "tune_extract.json", "w") as fh:
         json.dump(rec, fh, indent=1)
-    print(f"best: ring_thresh {best['ring_thresh']} heat_thresh {best['heat_thresh']} "
-          f"(agent F1 {best['agent_f1']:.4f}) -> {out_dir / 'tune_extract.json'}")
+    print(f"best: ring_thresh {best['ring_thresh']} heat_thresh {best['heat_thresh']}"
+          + (f" heat_nms_factor {best['heat_nms_factor']}" if sized else "")
+          + f" (agent F1 {best['agent_f1']:.4f}) -> {out_dir / 'tune_extract.json'}")
     return rec
 
 
@@ -256,12 +294,23 @@ def main(argv=None):
                    help="grid over ring/heat thresholds on the first --data set instead")
     p.add_argument("--ring-grid", nargs="+", type=float, default=None)
     p.add_argument("--heat-grid", nargs="+", type=float, default=None)
+    p.add_argument("--nms-grid", nargs="+", type=float, default=None,
+                   help="heat_nms_factor values (default: %s for runs that set it, else the "
+                        "run's own)" % HEAT_NMS_GRID)
+    g = p.add_argument_group("extractor overrides (default: the run's own)")
+    g.add_argument("--goal-mode", choices=["pairs", "exits"], default=None)
+    g.add_argument("--heat-thresh", type=float, default=None)
+    g.add_argument("--heat-nms-factor", type=float, default=None)
+    g.add_argument("--region-by-agents", action="store_const", const=True, default=None)
     a = p.parse_args(argv)
+    over = dict(goal_mode=a.goal_mode, heat_thresh=a.heat_thresh, heat_nms_factor=a.heat_nms_factor,
+                region_by_agents=a.region_by_agents)
     if a.tune_extract:
-        tune_extract(a.ckpt, a.data[0], a.out, a.ring_grid, a.heat_grid, a.limit, a.device, a.batch)
+        tune_extract(a.ckpt, a.data[0], a.out, a.ring_grid, a.heat_grid, a.limit, a.device, a.batch,
+                     nms_grid=a.nms_grid, overrides=over)
     else:
         evaluate(a.ckpt, a.data, a.out, figures=not a.no_figures, limit=a.limit,
-                 device=a.device, batch=a.batch)
+                 device=a.device, batch=a.batch, overrides=over)
 
 
 if __name__ == "__main__":

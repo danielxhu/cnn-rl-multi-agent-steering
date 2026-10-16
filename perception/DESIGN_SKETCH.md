@@ -495,9 +495,114 @@ them; sections that state a changed number were updated too.
 - Datasets `train_sketch4` / `val_sketch4` / `test_sketch4` (seeds 140 / 240 /
   340, `--layout mixed2`); metrics per layout include `walls` and `rooms`.
 
+**Sketch v5: rooms, close agents, multiple exits (16 Oct 2026, §9)**
+
+*Kept as specified.* `RegionSet`, `Scene.starts` / `exits` / `goal_for`, the
+51-number observation, `--style sketch5`, `--layout mixed3`, JSON `"radius"` /
+`"starts"` / `"exits"`, `TrainConfig.heat_sigma` (1.0), `ExtractConfig.heat_nms_factor`
+(default = `nms_factor`) and `goal_mode` (`"pairs"`), `region_set_ok`, the
+datasets of §9.5. v1–v4 and every older layout are unchanged: 15 sets
+(14 scenes per sketch style on its dataset layout, 4 per layout family, 14 of
+`mixed2`, 14 hard + aug3 scenes) hash identically before and after
+(image, labels, JSON); the hashes, recorded with the pre-v5 code, are now
+`sim/tests/reference_hashes.json`.
+
+*Additions and choices the spec left open.*
+
+- Layout names: `boxrooms`, `walls_multi`, `rooms_multi` (`layouts.MULTI_LAYOUTS`,
+  not in `LAYOUTS` or `mixed2`). `mixed3` = `mixed2` + 2 × each (18 entries, a
+  third of scenes new).
+- `boxrooms`: a room is in a corner (35 %), against one frame edge (30 %) or
+  free (35 %), ≥ 10 units from other rooms, sides 10–30 with one side ≥ 14
+  (rooms meant to hold a box: 18–30). Sides on the frame are not drawn. One
+  door (75 %) or two on different sides, 9.5–12 wide (free gap ≥ 6.5 >
+  `min_bottleneck`), with ≥ 2 units of wall either side so the room still
+  reads as a rectangle. Room 0 holds no box in 60 % of scenes; every other
+  room takes a box with p = 0.7, but at least one box always stays outside the
+  rooms. A box in a room keeps `wall_half + 2.5` off its walls; a box outside
+  keeps `wall_half + region_margin` off every room. 10 retries before falling
+  back to `open`. Measured on 300 layouts: a room with no box in 87 % of
+  scenes; 31 % of boxes inside rooms.
+- Several boxes: boxes ≥ 6 apart, start–exit centres ≥ 0.3 world (one pair:
+  0.35); the long side 12–28 when there are more than three boxes. Agents go
+  one per start box first, the rest to random start boxes (so one box may be
+  crowded), each facing its nearest exit, with no goal of its own. A start box
+  that gets no agent (fewer agents than boxes) is removed, and a scene left
+  with one start and one exit is written in the single-box form (`groups`, no
+  `starts` / `exits`), so k = m = 1 in 37–39 % of scenes, not a third. Every
+  exit must also be reachable from a start box (otherwise it would sit in
+  hatched dead space). The bottleneck is the widest disk with which every
+  start box reaches some exit. 300 / 300 valid per family; 0.06–0.11 s per
+  scene.
+- JSON of a several-box scene: `groups` is `[]` and `start_region` /
+  `goal_region` are the first start and exit, so older readers still work.
+  `render.py` and `sketch.py` draw every start and exit; `reachability`
+  checks each agent against its own goal set and keeps every box out of the
+  dead space.
+- Close agents: drawn per scene in `generate.py` from `SketchStyle.close_prob`
+  (0.4 in v5, 0 otherwise, so other styles keep their random stream) and passed
+  as `random_scene(close=True)`; this applies to every layout of `mixed3`, the
+  seven fixed families included. An agent joining a start box that already holds
+  one is placed 2R + `hard_gap` (+ 0.01) from a random one of them (first half
+  of the tries; then anywhere at that spacing). `dataset.json` records `close`
+  per scene for v5.
+- Letters: stroke `U(0.5, 0.7)` × the element's pen (v4: 0.7).
+- Drawn radius in the JSON = mean distance of one turn of the warped ring from
+  its area centroid (the JSON centre).
+- Heat targets: the Gaussian window is never smaller than the direction disk
+  (nominal radius), which matters only for σ < r / 4.
+- Extractor, exits mode: a box lying ≥ half inside a larger box is dropped
+  first (`diagnostics["dropped_nested_boxes"]`). Found on generated v5 labels:
+  the hole of a ring walled in by touching neighbours is cut off from its box
+  (the seal closing bridges one ring, not two) and came back as a tiny start box
+  holding that agent. Pairs mode is unchanged.
+- "A start box holding an agent" (exits mode, extractor and metric) means an
+  agent centre within one agent radius of the box: agents are placed anywhere
+  in their box, edges included, and a drawn centre on the edge fell a pixel
+  outside the parsed box (1 of 50 smoke scenes, found by an oracle run).
+- Metrics: `region_set_ok` counts as true starts only the start boxes holding a
+  true agent (in exits mode an empty start box is no start, on either side);
+  it is reported in both modes. In exits mode `region_iou` and
+  `region_count_ok` are taken over the box sets and `group_pairing_ok` is NaN.
+  `scene_metrics(..., goal_mode=...)`; `train.py` and `evaluate.py` pass the
+  run's.
+- `--tune-extract` grids `heat_nms_factor` over 0.5, 0.6, 0.8, 1.0, 1.2 for runs
+  that set it (or with `--nms-grid`); for those runs the ring threshold (heat
+  fallback only) stays the run's unless `--ring-grid` is given. Other runs
+  grid exactly as before. `tune_extract.json` records the goal mode.
+- `evaluate.py` takes `--goal-mode`, `--heat-thresh`, `--heat-nms-factor`,
+  `--region-by-agents`, and `predict.py` the first three, overriding the run's
+  extractor: to apply tuned thresholds, and to score the v4 model as exit sets
+  on `test_sketch5`.
+- Tests (§9.7): `test_older_sketch_styles_unchanged` is the "v1–v4 hashes"
+  test. Scene JSON hashes (floats rounded to 1e-6) are compared on any machine;
+  image / label hashes only with the recorded numpy / OpenCV / Pillow versions
+  (2.5.4 / 5.0.0 / 12.3.0 in the development container), because
+  anti-aliasing and JPEG can differ between versions. Also added
+  `test_close_agents_and_sketch5_json` (sim). The perception sketch checks
+  now run on v5 too (fixed + free-form layouts + 2 × each multi-box family,
+  every second scene packed), v5 extraction with its own σ 0.5, NMS 0.6 and
+  exits mode, boxes checked with `region_set_ok`.
+- Test hook: `sketch(..., parts=True)` also returns `ring_pts` / `tail_pts`,
+  each agent's whole drawn ring and tail. Where v5 rings touch or tails cross,
+  a later agent overwrites part of an earlier one in the `rings` / `tails`
+  maps, which pulled the pixel circle fit up to 1.8 px off a correct centre and
+  a tail fit 8° off; for those agents (drawn radii + 2 units apart or closer)
+  the test fits the drawn curves and skips the raw-centroid bound. Agents of
+  v1–v4 are measured as before.
+- Checks on 140 v5 scenes drawn like `train_sketch5` (`mixed3`, 40 % packed,
+  627 agents): JSON ↔ drawing passes in every scene; heat targets
+  (σ 0.5 × drawn radius) peak on agent pixels everywhere; extraction on
+  ground-truth labels with those targets, NMS 0.6 and exits mode matches all
+  627 agents with no extra detection at 512 and at 256, obstacle counts exact,
+  and `region_set_ok` holds in 140 / 140 scenes at 256 and 139 / 140 at 512.
+  Known limit, the one failure: a packed row of agents drawn right across a
+  narrow start box splits its label in two (the seal closing bridges one ring,
+  not a row); pairs mode splits it the same way.
+
 ---
 
-## 9. Sketch v5: rooms, close agents, multiple exits (spec, 15 Oct 2026)
+## 9. Sketch v5: rooms, close agents, multiple exits (spec, 15 Oct 2026; **built** 16 Oct, deviations in §8)
 
 **Why.** Four real drawings parsed with the v4 model (`results/old_drawings_v4/`,
 16 of 17 agents, 12 of 12 obstacles, every real start/goal right) showed the

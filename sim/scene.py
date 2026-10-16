@@ -3,6 +3,14 @@
 A Scene is pure geometry: walls, obstacles, regions and agents.  It carries no
 simulation state -- `physics.Simulator` owns that -- so a Scene can be rendered,
 serialised and re-loaded without side effects.
+
+Goals (DESIGN_SKETCH §9.4): an agent's goal is its own `goal_region` if set
+(`crossing`), else the scene's exit set `RegionSet(exits)` if the scene
+declares `exits` (several start / exit boxes; an agent succeeds by reaching any
+exit), else the scene's `goal_region` (every scene made before exits existed).
+`RegionSet` has `Region`'s goal interface, so the simulator treats both alike.
+Optional fields (`Agent.radius`, `Scene.starts` / `exits`) are written to JSON
+only when set, so older scenes serialise exactly as before.
 """
 from __future__ import annotations
 
@@ -62,6 +70,51 @@ class Region:
         return Region(*v)
 
 
+class RegionSet:
+    """Several regions acting as one goal: reaching any member counts.
+
+    Same goal interface as `Region` (`contains`, `distance_to`, `nearest_point`),
+    so `physics.Simulator` needs no change: the observation's goal distance and
+    bearing, and the reward's progress, refer to the nearest member.
+    """
+
+    def __init__(self, regions):
+        self.regions = tuple(regions)
+        if not self.regions:
+            raise ValueError("RegionSet needs at least one region")
+
+    def contains(self, p) -> bool:
+        return any(r.contains(p) for r in self.regions)
+
+    def distance_to(self, p) -> float:
+        return min(r.distance_to(p) for r in self.regions)
+
+    def nearest_point(self, p):
+        """The nearest point of the nearest member (p itself when inside one)."""
+        return min((r.nearest_point(p) for r in self.regions),
+                   key=lambda q: math.hypot(p[0] - q[0], p[1] - q[1]))
+
+    def __iter__(self):
+        return iter(self.regions)
+
+    def __len__(self):
+        return len(self.regions)
+
+    def __eq__(self, other):
+        return isinstance(other, RegionSet) and self.regions == other.regions
+
+    def __hash__(self):
+        return hash(self.regions)
+
+    def __repr__(self):
+        return "RegionSet(%r)" % (list(self.regions),)
+
+
+def members(goal) -> list:
+    """The regions of a goal: a Region's [itself], a RegionSet's members."""
+    return list(goal.regions) if isinstance(goal, RegionSet) else [goal]
+
+
 @dataclass
 class Obstacle:
     c: Point
@@ -77,16 +130,23 @@ class Obstacle:
 
 @dataclass
 class Agent:
-    """One agent. `goal_region` overrides the scene goal; None means use the scene's."""
+    """One agent. `goal_region` overrides the scene goal; None means use the scene's.
+
+    `radius`: the radius it was *drawn* with (sketch v5, world units); None
+    for every other scene, whose agents are drawn at the configured radius.
+    """
 
     pos: Point
     heading: float                      # radians, 0 = +x, CCW positive
     goal_region: Region | None = None
+    radius: float | None = None
 
     def as_dict(self):
         d = {"pos": [self.pos[0], self.pos[1]], "heading": self.heading}
         if self.goal_region is not None:
             d["goal_region"] = self.goal_region.as_list()
+        if self.radius is not None:
+            d["radius"] = self.radius
         return d
 
     @staticmethod
@@ -96,6 +156,7 @@ class Agent:
             pos=tuple(d["pos"]),
             heading=d["heading"],
             goal_region=Region.from_list(g) if g else None,
+            radius=d.get("radius"),
         )
 
 
@@ -111,9 +172,34 @@ class Scene:
     groups: list = field(default_factory=list)
     seed: int | None = None
     bottleneck: float | None = None                  # widest passable diameter
+    # several start / exit boxes (None: the single start_region / goal_region);
+    # when set, start_region / goal_region are their first members
+    starts: list | None = None
+    exits: list | None = None
 
-    def goal_for(self, agent: Agent) -> Region:
-        return agent.goal_region or self.goal_region
+    def goal_for(self, agent: Agent):
+        """The agent's own goal, else any exit, else the scene goal (DESIGN_SKETCH §9.4)."""
+        if agent.goal_region is not None:
+            return agent.goal_region
+        if self.exits:
+            return RegionSet(self.exits)
+        return self.goal_region
+
+    def start_boxes(self) -> list:
+        """Every start box: `starts`, else the groups' starts, else start_region."""
+        if self.starts is not None:
+            return list(self.starts)
+        if self.groups:
+            return [s for s, _ in self.groups if s is not None]
+        return [self.start_region] if self.start_region is not None else []
+
+    def exit_boxes(self) -> list:
+        """Every goal box: `exits`, else the groups' goals, else goal_region."""
+        if self.exits is not None:
+            return list(self.exits)
+        if self.groups:
+            return [g for _, g in self.groups if g is not None]
+        return [self.goal_region] if self.goal_region is not None else []
 
     def with_obstacle(self, obs: Obstacle) -> "Scene":
         return replace(self, obstacles=self.obstacles + [obs])
@@ -132,6 +218,10 @@ class Scene:
             "groups": [[a.as_list(), b.as_list()] for a, b in self.groups],
             "agents": [a.as_dict() for a in self.agents],
         }
+        if self.starts is not None:
+            d["starts"] = [r.as_list() for r in self.starts]
+        if self.exits is not None:
+            d["exits"] = [r.as_list() for r in self.exits]
         if cfg is not None:
             d["world"] = {
                 "size": cfg.world,
@@ -157,6 +247,8 @@ class Scene:
             layout=d.get("layout", "open"),
             seed=d.get("seed"),
             bottleneck=d.get("bottleneck"),
+            starts=[Region.from_list(r) for r in d["starts"]] if d.get("starts") is not None else None,
+            exits=[Region.from_list(r) for r in d["exits"]] if d.get("exits") is not None else None,
         )
 
 

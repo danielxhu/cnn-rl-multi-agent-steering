@@ -6,6 +6,7 @@
     python train.py ... --train train_sketch train_aug3   # several sets, concatenated
     python train.py ... --resume                   # continue from ckpt_last.pt
     python train.py ... --init runs/x/ckpt_best.pt --epochs 15   # fine-tune from a trained model
+    python train.py ... --heat-sigma 0.5 --goal-mode exits         # sketch v5 (DESIGN_SKETCH §9.2)
 
 Run directory contents:
     config.json     resolved RunConfig + git hash + argv
@@ -147,7 +148,7 @@ def validate_extract(model, ds: SceneDataset, indices, device, cfg: RunConfig, b
     for i, pr in zip(indices, preds):
         parsed = extract(pr["labels"], ds.worlds[i], pr.get("heat"), pr.get("dir"), cfg.extract)
         m, ar = scene_metrics(ds.scenes[i], ds.labels512(i), parsed, pr["labels"], ds.worlds[i],
-                              ds.size, sid=ds.ids[i])
+                              ds.size, sid=ds.ids[i], goal_mode=cfg.extract.goal_mode)
         m["layout"] = ds.layouts[i]
         rows.append(m)
         arows.extend(ar)
@@ -187,7 +188,8 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
     root = Path(dcfg.root)
     train_ds = concat_datasets([
         SceneDataset(root / name, dcfg.size, instance_targets=cfg.model.instance_head,
-                     layouts=dcfg.layouts, cache=dcfg.cache) for name in train_dirs(dcfg)])
+                     layouts=dcfg.layouts, cache=dcfg.cache, heat_sigma=tcfg.heat_sigma)
+        for name in train_dirs(dcfg)])
     val_ds = SceneDataset(root / dcfg.val, dcfg.size, instance_targets=False, layouts=dcfg.layouts)
     class_weights = class_weights_from_freq(class_frequencies(train_ds))
     workers = 0 if dcfg.cache else dcfg.num_workers

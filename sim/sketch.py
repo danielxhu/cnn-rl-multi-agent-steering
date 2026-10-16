@@ -51,7 +51,13 @@ Invariants:
   adds agents drawn at one size per drawing from 0.6x to 2x (each varying a
   little, never overlapping a neighbour; tails scale with them) and a separate
   pen width for every element. The same rule holds: v1, v2 and v3 stay
-  pixel-identical.
+  pixel-identical. ``SKETCH_V5`` (``--style sketch5``, DESIGN_SKETCH §9.1)
+  adds smaller, thinner letters, close agents (a drawn circle may reach 0.6 of
+  the distance to its nearest neighbour, so circles touch; ``close_prob`` is
+  read by ``generate.py``, which then packs the agents of a start box at the
+  hard spacing) and each agent's drawn radius in the JSON (``"radius"``).
+  Scenes with several start / exit boxes (``Scene.starts`` / ``exits``, any
+  style) draw every box and write them back as ``starts`` / ``exits``.
 """
 from __future__ import annotations
 
@@ -156,6 +162,12 @@ class SketchStyle:
     agent_tail: tuple = (1.6, 2.8)              # tail length in drawn radii (with agent_scale)
     element_width: tuple | None = None          # every element's own pen width, x the pen
 
+    # --- v5 options (defaults reproduce v4 exactly; see SKETCH_V5) ---
+    agent_cap: float = 0.42                     # drawn radius <= this x the nearest neighbour's distance
+    letter_pen: tuple | None = None             # letter stroke, x the element's pen (None: 0.7)
+    close_prob: float = 0.0                     # scenes with packed start boxes (generate.py)
+    record_radius: bool = False                 # write each agent's drawn radius to the JSON
+
 
 SKETCH_V2 = SketchStyle(
     pen_width=(2.0, 5.0), digital_prob=0.35,
@@ -168,7 +180,10 @@ SKETCH_V3 = replace(
     dropout_prob=0.35, stray_prob=0.4,
 )
 SKETCH_V4 = replace(SKETCH_V3, agent_scale=(0.6, 2.0), element_width=(0.55, 1.7))
-STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2, "sketch3": SKETCH_V3, "sketch4": SKETCH_V4}
+SKETCH_V5 = replace(SKETCH_V4, letter_scale=(0.25, 1.0), letter_pen=(0.5, 0.7), agent_cap=0.6,
+                    close_prob=0.4, record_radius=True)
+STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2, "sketch3": SKETCH_V3, "sketch4": SKETCH_V4,
+          "sketch5": SKETCH_V5}
 
 
 # --------------------------------------------------------------- primitives
@@ -268,6 +283,7 @@ class DrawnRegion:
     group: int = 0
     letter_th: int = 0                           # stroke width; 0: h / 12
     letter_form: dict | None = None              # v3: face / strokes, shear, aspect, warp seed
+    # `group` is the pair index, or ("S" | "G", i) for the boxes of a several-box scene
 
 
 @dataclass
@@ -291,6 +307,7 @@ class Drawing:
     stray: list = field(default_factory=list)    # v3: [Stroke] marks that are nothing
     dropout_seed: int | None = None              # v3: gaps along the ink
     dropout_frac: float = 0.0
+    record_radius: bool = False                  # v5: agents' drawn radii go to the JSON
 
 
 # ----------------------------------------------------------------- perturb
@@ -512,18 +529,14 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         dead = None                                    # blank dead space is background
 
     regions = []
-    pairs = scene.groups or [(scene.start_region, scene.goal_region)]
-    for gi, (start, goal) in enumerate(pairs):
-        for reg, ch, cls in ((start, "S", C_START), (goal, "G", C_GOAL)):
-            if reg is None:
-                continue
-            a, b = P(reg.x0, reg.y1), P(reg.x1, reg.y0)
-            quad = np.array([[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]])
-            quad = quad + rng.normal(0, st.region_corner_sigma * k, (4, 2))
-            mr = mk * ew()
-            sides = [_stroke(_wobbly_line(quad[i], quad[(i + 1) % 4], rng, 1.3 * k, st.region_overshoot),
-                             rng, mr * 0.6, st.width_var) for i in range(4)]
-            regions.append(DrawnRegion(quad, sides, cls, ch, group=gi))
+    for reg, ch, cls, gi in _boxes_to_draw(scene):
+        a, b = P(reg.x0, reg.y1), P(reg.x1, reg.y0)
+        quad = np.array([[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]])
+        quad = quad + rng.normal(0, st.region_corner_sigma * k, (4, 2))
+        mr = mk * ew()
+        sides = [_stroke(_wobbly_line(quad[i], quad[(i + 1) % 4], rng, 1.3 * k, st.region_overshoot),
+                         rng, mr * 0.6, st.width_var) for i in range(4)]
+        regions.append(DrawnRegion(quad, sides, cls, ch, group=gi))
 
     boundary = {tuple(map(tuple, s)) for s in boundary_walls(cfg.world)}
     walls = []
@@ -568,7 +581,7 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
             ra = r0 * size * rng.uniform(1 - st.agent_scale_jitter, 1 + st.agent_scale_jitter)
             others = np.delete(centres, i, axis=0)
             if len(others):
-                ra = min(ra, 0.42 * float(np.linalg.norm(others - c, axis=1).min()))
+                ra = min(ra, st.agent_cap * float(np.linalg.norm(others - c, axis=1).min()))
         ring_pts, th = _wobbly_closed(c, ra, rng, st.agent_wobble, st.stretch,
                                       close=rng.uniform(*st.agent_close), drift=0.1)
         turn = int(np.searchsorted(th - th[0], 2 * math.pi, side="right"))
@@ -590,7 +603,8 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         reg.letter_h = min(st.letter_height_frac * min(x1 - x0, y1 - y0), st.letter_max_px * k)
         reg.letter_h *= rng.uniform(*st.letter_scale)
         if st.letter_in_pen:
-            reg.letter_th = max(1, int(round(mk * ew() * 0.7)))
+            thin = rng.uniform(*st.letter_pen) if st.letter_pen else 0.7
+            reg.letter_th = max(1, int(round(mk * ew() * thin)))
         if st.letter_variety:
             reg.letter_form = _letter_form(reg.letter, rng, st)
         reg.letter_centre = tuple(_letter_spot(reg.quad, reg.letter_h, agents, k)
@@ -606,7 +620,23 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
 
     return Drawing(n, ink, paper, cfg.wall_half * cfg.scale, hatch, dead, regions, walls,
                    obstacles, agents, st.printed_ink, st.label_extra_wall, st.label_extra_agent,
-                   digital, stray, drop_seed, drop_frac)
+                   digital, stray, drop_seed, drop_frac, st.record_radius)
+
+
+def _boxes_to_draw(scene):
+    """[(region, letter, class, key)] in drawing order: per pair start then goal
+    (key = pair index), or for a several-box scene every start then every exit
+    (key = ("S" | "G", i))."""
+    if scene.starts is not None or scene.exits is not None:
+        return ([(r, "S", C_START, ("S", i)) for i, r in enumerate(scene.start_boxes())]
+                + [(r, "G", C_GOAL, ("G", i)) for i, r in enumerate(scene.exit_boxes())])
+    out = []
+    pairs = scene.groups or [(scene.start_region, scene.goal_region)]
+    for gi, (start, goal) in enumerate(pairs):
+        for reg, ch, cls in ((start, "S", C_START), (goal, "G", C_GOAL)):
+            if reg is not None:
+                out.append((reg, ch, cls, gi))
+    return out
 
 
 # -------------------------------------------------------------------- draw
@@ -843,6 +873,8 @@ def drawn_scene(d: Drawing, H, scene, cfg) -> Scene:
         (x0, y1), (x1, y0) = W(q.min(0)), W(q.max(0))  # px min is world top-left
         # sorted on purpose: Region.__post_init__ loses y1 when given y0 > y1
         regs[(reg.group, reg.cls)] = Region(x0, y0, x1, y1)
+    if scene.starts is not None or scene.exits is not None:
+        return _drawn_multi(d, H, scene, cfg, walls, obstacles, regs)
     pairs = scene.groups or [(scene.start_region, scene.goal_region)]
     groups = [(regs.get((gi, C_START)), regs.get((gi, C_GOAL))) for gi in range(len(pairs))]
     goal_map = {g: groups[gi][1] for gi, (_, g) in enumerate(pairs)}
@@ -854,12 +886,36 @@ def drawn_scene(d: Drawing, H, scene, cfg) -> Scene:
         tail = _warp(H, da.tail.pts)
         heading = _line_angle(tail)
         goal = goal_map.get(ag.goal_region) if ag.goal_region is not None else None
-        agents.append(Agent(pos=W(c), heading=heading, goal_region=goal))
+        agents.append(Agent(pos=W(c), heading=heading, goal_region=goal,
+                            radius=_drawn_radius(ring, c, cfg) if d.record_radius else None))
 
     return Scene(walls=walls, obstacles=obstacles, agents=agents,
                  start_region=groups[0][0], goal_region=groups[0][1], layout=scene.layout,
                  groups=groups if scene.groups else [], seed=scene.seed,
                  bottleneck=scene.bottleneck)
+
+
+def _drawn_radius(ring, c, cfg) -> float:
+    """Drawn radius in world units: mean distance of one turn of the warped ring from its centre."""
+    return float(np.linalg.norm(ring - c, axis=1).mean()) / cfg.scale
+
+
+def _drawn_multi(d: Drawing, H, scene, cfg, walls, obstacles, regs) -> Scene:
+    """Step 4 for a several-box scene: every start and exit as drawn; agents
+    carry no goal of their own (any exit counts)."""
+    W = lambda p: _to_world(cfg, float(p[0]), float(p[1]))  # noqa: E731
+    starts = [regs[(("S", i), C_START)] for i in range(len(scene.start_boxes()))]
+    exits = [regs[(("G", i), C_GOAL)] for i in range(len(scene.exit_boxes()))]
+    agents = []
+    for da in d.agents:
+        ring = _warp(H, da.ring.pts[: max(3, da.ring_turn)])
+        c = _area_centroid(ring)
+        agents.append(Agent(pos=W(c), heading=_line_angle(_warp(H, da.tail.pts)),
+                            radius=_drawn_radius(ring, c, cfg) if d.record_radius else None))
+    return Scene(walls=walls, obstacles=obstacles, agents=agents,
+                 start_region=starts[0] if starts else None, goal_region=exits[0] if exits else None,
+                 layout=scene.layout, groups=[], seed=scene.seed, bottleneck=scene.bottleneck,
+                 starts=starts, exits=exits)
 
 
 # -------------------------------------------------------------------- API
@@ -868,7 +924,11 @@ def sketch(scene, cfg=None, rng=None, fill_unreachable=True, style=None, parts=F
     """(PIL RGB image, uint8 labels (n, n), drawn Scene[, parts dict]).
 
     `rng` defaults to ``default_rng(scene.seed)``. ``parts=True`` adds
-    ``{"rings", "tails": uint8 (n, n) per-agent maps, "H": perspective}`` for tests.
+    ``{"rings", "tails": uint8 (n, n) per-agent maps, "H": perspective,
+    "ring_pts", "tail_pts": [each agent's drawn ring / tail polyline, px after
+    the perspective]}`` for tests (where rings touch or tails cross, a later
+    agent overwrites an earlier one in ``rings`` / ``tails``; the polylines
+    keep each whole).
     """
     cfg = cfg or Config()
     st = style or SketchStyle()
@@ -881,5 +941,8 @@ def sketch(scene, cfg=None, rng=None, fill_unreachable=True, style=None, parts=F
                                digital=d.digital)
     drawn = drawn_scene(d, H, scene, cfg)
     if parts:
-        return Image.fromarray(img, "RGB"), lab, drawn, {"rings": extra[0], "tails": extra[1], "H": H}
+        return Image.fromarray(img, "RGB"), lab, drawn, {
+            "rings": extra[0], "tails": extra[1], "H": H,
+            "ring_pts": [_warp(H, da.ring.pts) for da in d.agents],
+            "tail_pts": [_warp(H, da.tail.pts) for da in d.agents]}
     return Image.fromarray(img, "RGB"), lab, drawn

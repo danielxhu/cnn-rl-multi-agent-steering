@@ -237,6 +237,16 @@ python predict.py --ckpt runs/sketch_s256_inst_s0/ckpt_best.pt --image IMG_0042.
   agents drawn 0.6–2x, a pen width per element, and free-form layouts (`walls`,
   `rooms`: random and diagonal walls, start / goal anywhere) — the most robust
   set; train on it for drawings of unknown style and layout.
+- **Style v5** (`--style sketch5`, sets `*_sketch5` on `--layout mixed3`,
+  DESIGN_SKETCH §9) adds small rooms next to boxes (and rooms holding no box),
+  1–3 start and 1–3 exit boxes, agents drawn touching, smaller and thinner
+  letters, and each agent's drawn radius in the JSON. Train with
+  `--heat-sigma 0.5` (heat peaks 0.5 × the drawn radius), `--heat-nms-factor 0.6`
+  and `--goal-mode exits`: every G box is an exit any agent may use, S boxes
+  without agents are dropped, and the parsed scene's agents succeed in the
+  simulator by reaching any exit. `--tune-extract` then grids the heat threshold
+  with the NMS factor; pass the result to `evaluate.py` / `predict.py` with
+  `--heat-thresh` / `--heat-nms-factor`.
 - Look at a few generated scenes before a long run:
   `python ../sim/generate.py --n 7 --style sketch --preview 7 --out data/preview_sketch`.
 

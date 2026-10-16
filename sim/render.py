@@ -94,6 +94,9 @@ def render(scene, cfg=None, rng=None, fill_unreachable=True, clear=None):
     overlay = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     do = ImageDraw.Draw(overlay)
     pairs = scene.groups or [(scene.start_region, scene.goal_region)]
+    if scene.starts is not None or scene.exits is not None:
+        # several boxes (DESIGN_SKETCH §9.4): every start, then every exit
+        pairs = [(s, None) for s in scene.start_boxes()] + [(None, g) for g in scene.exit_boxes()]
     for start, goal in pairs:
         if start is not None:
             box = _rect_px(cfg, start)

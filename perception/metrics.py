@@ -12,6 +12,15 @@ because true centres are ≥ 4 units apart.
 ``wall_surface_err`` is symmetric: parsed wall edges are rasterised on a 512
 canvas and compared with the contour of the 512 ground-truth wall mask through
 distance transforms, in both directions.
+
+Regions in ``goal_mode="exits"`` (DESIGN_SKETCH §9.3): ``region_set_ok`` = every
+true start box (one holding a true agent) and every true exit matched
+one-to-one by a parsed box of the same kind with IoU > 0.5, and no extra parsed
+boxes; it replaces ``group_pairing_ok`` (NaN in this mode) in ``scene_usable``,
+and ``region_iou`` / ``region_count_ok`` are taken over the box sets. Scenes
+with per-agent goals (``crossing``) are scored as exit sets: a drawing cannot
+express pairing. ``region_set_ok`` is reported in both modes; everything else
+in ``"pairs"`` mode is as before.
 """
 from __future__ import annotations
 
@@ -34,7 +43,7 @@ SCENE_KEYS = [
     "agent_precision", "agent_recall", "agent_f1", "agent_count_ok",
     "agent_center_err", "heading_err_deg",
     "obst_precision", "obst_recall", "obst_count_ok", "obst_center_err", "obst_radius_err",
-    "region_iou", "region_count_ok", "group_pairing_ok",
+    "region_iou", "region_count_ok", "group_pairing_ok", "region_set_ok",
     "wall_iou", "wall_surface_err", "wall_line_err", "scene_usable",
     "n_agents", "n_pred_agents", "n_obstacles", "n_pred_obstacles",
 ]
@@ -120,6 +129,50 @@ def _pairs_of(scene) -> list:
     return []
 
 
+def _unique(regions) -> list:
+    out = []
+    for r in regions:
+        if r is not None and r not in out:
+            out.append(r)
+    return out
+
+
+def box_sets(scene, agents_only=False, tol=AGENT_TOL):
+    """(start boxes, exit boxes) of a scene, each box once. ``agents_only``: only
+    the start boxes holding one of the scene's agents, within `tol` of the box
+    as the extractor counts it (in exits mode a start box without agents is no
+    start)."""
+    starts, exits = _unique(scene.start_boxes()), _unique(scene.exit_boxes())
+    if agents_only:
+        starts = [b for b in starts if any(b.distance_to(a.pos) <= tol for a in scene.agents)]
+    return starts, exits
+
+
+def _boxes_match(gt, pred) -> bool:
+    """One-to-one match, IoU > REGION_MATCH_IOU, no extra parsed boxes (greedy by IoU)."""
+    if len(gt) != len(pred):
+        return False
+    cand = sorted(((region_iou(g, p), i, j) for i, g in enumerate(gt) for j, p in enumerate(pred)),
+                  reverse=True)
+    used_g, used_p = set(), set()
+    for iou, i, j in cand:
+        if iou <= REGION_MATCH_IOU:
+            break
+        if i in used_g or j in used_p:
+            continue
+        used_g.add(i)
+        used_p.add(j)
+    return len(used_g) == len(gt)
+
+
+def region_set_ok(gt_scene, parsed_scene) -> bool:
+    """Every true start box (holding a true agent) and every true exit matched
+    one-to-one by a parsed box of the same kind, IoU > 0.5, no extra boxes."""
+    gs, ge = box_sets(gt_scene, agents_only=True)
+    ps, pe = box_sets(parsed_scene)
+    return _boxes_match(gs, ps) and _boxes_match(ge, pe)
+
+
 # ------------------------------------------------------------------ walls
 
 def rasterise_walls(walls, world_size: float, size: int, thickness: float = 0.0) -> np.ndarray:
@@ -203,8 +256,10 @@ def wall_line_error(gt_walls, parsed_walls) -> float:
 
 # ------------------------------------------------------------------ scene
 
-def scene_metrics(gt_scene, gt_labels512, parsed, pred_labels, world, size, sid=None):
-    """(scene-level dict, per-GT-agent rows) for one scene."""
+def scene_metrics(gt_scene, gt_labels512, parsed, pred_labels, world, size, sid=None,
+                  goal_mode="pairs"):
+    """(scene-level dict, per-GT-agent rows) for one scene; `goal_mode` as the
+    extractor's (``"exits"``: regions scored as box sets, see the module doc)."""
     W = float(world["size"])
     layout = getattr(gt_scene, "layout", "unknown")
     m = {k: NAN for k in SCENE_KEYS}
@@ -232,7 +287,7 @@ def scene_metrics(gt_scene, gt_labels512, parsed, pred_labels, world, size, sid=
         m["obst_precision"] = m["obst_recall"] = 0.0
         m["obst_count_ok"] = 0.0
         m["region_iou"] = 0.0
-        m["region_count_ok"] = m["group_pairing_ok"] = 0.0
+        m["region_count_ok"] = m["group_pairing_ok"] = m["region_set_ok"] = 0.0
         m["scene_usable"] = 0.0
         m["n_pred_agents"] = m["n_pred_obstacles"] = 0
         return m, rows
@@ -273,6 +328,8 @@ def scene_metrics(gt_scene, gt_labels512, parsed, pred_labels, world, size, sid=
     gt_pairs, pr_pairs = _pairs_of(gt_scene), _pairs_of(ps)
     gt_starts, gt_goals = [p[0] for p in gt_pairs], [p[1] for p in gt_pairs]
     pr_starts, pr_goals = [p[0] for p in pr_pairs], [p[1] for p in pr_pairs]
+    if goal_mode == "exits":
+        (gt_starts, gt_goals), (pr_starts, pr_goals) = box_sets(gt_scene, True), box_sets(ps)
     ious = []
     for gt_list, pr_list in ((gt_starts, pr_starts), (gt_goals, pr_goals)):
         for g in gt_list:
@@ -283,7 +340,9 @@ def scene_metrics(gt_scene, gt_labels512, parsed, pred_labels, world, size, sid=
         any(region_iou(gs, s) > REGION_MATCH_IOU and region_iou(gg, g) > REGION_MATCH_IOU
             for s, g in pr_pairs)
         for gs, gg in gt_pairs)
-    m["group_pairing_ok"] = float(pairing_ok)
+    m["group_pairing_ok"] = float(pairing_ok) if goal_mode != "exits" else NAN
+    m["region_set_ok"] = float(region_set_ok(gt_scene, ps))
+    regions_ok = m["region_set_ok"] == 1.0 if goal_mode == "exits" else pairing_ok
 
     # --- walls -------------------------------------------------------------
     thickness = float(parsed.world.get("wall_thickness", 0.0))
@@ -293,7 +352,7 @@ def scene_metrics(gt_scene, gt_labels512, parsed, pred_labels, world, size, sid=
         m["wall_line_err"] = wall_line_error(gt_scene.walls, ps.walls)
 
     m["scene_usable"] = float(len(pairs) == len(gt_pos) == len(pred_pos)
-                              and m["obst_count_ok"] == 1.0 and pairing_ok)
+                              and m["obst_count_ok"] == 1.0 and regions_ok)
     return m, rows
 
 
