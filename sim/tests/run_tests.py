@@ -341,9 +341,14 @@ HASH_SETS = {
 
 
 def _versions() -> dict:
+    """What pixel hashes depend on: library versions *and* the platform -- the same
+    versions write different PNG bytes on Linux and macOS (checked 16 Oct 2026:
+    pre- and post-v5 code agree byte for byte on one machine, not across two)."""
+    import platform
     import cv2
     import PIL
-    return {"numpy": np.__version__, "opencv": cv2.__version__, "pillow": PIL.__version__}
+    return {"numpy": np.__version__, "opencv": cv2.__version__, "pillow": PIL.__version__,
+            "platform": f"{platform.system()}-{platform.machine()}"}
 
 
 def _rounded(o):

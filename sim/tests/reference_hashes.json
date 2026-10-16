@@ -2,7 +2,8 @@
  "versions": {
   "numpy": "2.5.4",
   "opencv": "5.0.0",
-  "pillow": "12.3.0"
+  "pillow": "12.3.0",
+  "platform": "Linux-x86_64"
  },
  "sets": {
   "sketch": {
