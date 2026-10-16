@@ -9,9 +9,12 @@ Each sample is written as three files that share a stem:
     scene_00001_labels.png   palette PNG, pixel value == class index
     scene_00001.json         structured ground truth
 
-`--style sketch` / `sketch2` draws the scene hand-drawn instead (sketch.py):
-the JSON then holds the drawn geometry, and the domain-randomisation flags are
-ignored.
+`--style sketch` / `sketch2` / ... / `sketch5` draws the scene hand-drawn
+instead (sketch.py): the JSON then holds the drawn geometry, and the
+domain-randomisation flags are ignored. `sketch5` also packs the agents of a
+start box at the hard spacing in 40 % of scenes and writes each agent's drawn
+radius. `--layout mixed3` adds rooms next to boxes and several start / exit
+boxes (layouts.MULTI_LAYOUTS; DESIGN_SKETCH §9).
 
 plus one `dataset.json` recording the exact configuration, so a run is
 reproducible from the output directory alone.  See README.md for the knobs.
@@ -61,7 +64,9 @@ def build_parser():
     p.add_argument("--out", default="data/train", help="output directory")
     p.add_argument("--layout", default="mixed",
                    help="one of %s, or 'mixed' for an even spread of those; 'mixed2' adds the "
-                        "free-form families walls / rooms (~40 percent)" % ", ".join(BUILDERS))
+                        "free-form families walls / rooms (~40 percent); 'mixed3' adds to mixed2 "
+                        "boxrooms / walls_multi / rooms_multi (a third): small rooms next to boxes, "
+                        "several start and exit boxes" % ", ".join(BUILDERS))
     p.add_argument("--agents", default="1-6", help="agents per scene, e.g. 3-8 or 4")
     p.add_argument("--obstacles", default="1-4", help="obstacles per scene, e.g. 2-6")
     p.add_argument("--hard-ratio", type=float, default=0.0,
@@ -69,12 +74,13 @@ def build_parser():
     p.add_argument("--size", type=int, default=512, help="image side in pixels")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--config", default=None, help="JSON file overriding any Config field")
-    p.add_argument("--style", default="render", choices=["render", "sketch", "sketch2", "sketch3", "sketch4"],
+    p.add_argument("--style", default="render", choices=["render", "sketch", "sketch2", "sketch3", "sketch4", "sketch5"],
                    help="render: the default renderer; sketch: hand-drawn, one black pen, "
                         "photographed (sketch.py); sketch2: the same widened to tablet drawings, "
                         "thin pens and sparse fills (sketch.SKETCH_V2); sketch3: v2 plus S / G in "
                         "many hands, a harsher camera, pen dropouts and stray marks (SKETCH_V3); sketch4: v3 "
-                        "plus agents 0.6-2x and a pen width per element (SKETCH_V4). "
+                        "plus agents 0.6-2x and a pen width per element (SKETCH_V4); sketch5: v4 plus smaller, "
+                        "thinner letters, touching agents and drawn radii in the JSON (SKETCH_V5). "
                         "The jitter flags are ignored for the sketch styles")
 
     g = p.add_argument_group("world")
@@ -135,13 +141,17 @@ def main(argv=None):
 
     index, previews, skipped = [], [], 0
     t0 = time.time()
+    close_prob = SKETCH_STYLES[a.style].close_prob if a.style in SKETCH_STYLES else 0.0
     for i in range(a.n):
         layout = layouts[i % len(layouts)] if len(layouts) > 1 else layouts[0]
+        # sketch v5 only: agents packed at the hard spacing (drawn only then, so
+        # every other style keeps its random stream)
+        close = bool(rng.random() < close_prob) if close_prob > 0 else False
         scene = random_scene(
             rng, cfg, layout=layout,
             n_agents=int(rng.integers(n_agents[0], n_agents[1] + 1)),
             n_obstacles=int(rng.integers(n_obst[0], n_obst[1] + 1)),
-            hard=bool(rng.random() < cfg.hard_ratio),
+            hard=bool(rng.random() < cfg.hard_ratio), close=close,
         )
         if scene is None:
             skipped += 1
@@ -163,9 +173,12 @@ def main(argv=None):
         save_labels(lab, out / f"{sid}_labels.png")
         with open(out / f"{sid}.json", "w") as fh:
             json.dump(rec, fh, indent=1)
-        index.append({"id": sid, "layout": layout, "n_agents": len(scene.agents),
-                      "n_obstacles": len(scene.obstacles),
-                      "bottleneck": scene.bottleneck})
+        entry = {"id": sid, "layout": layout, "n_agents": len(scene.agents),
+                 "n_obstacles": len(scene.obstacles),
+                 "bottleneck": scene.bottleneck}
+        if close_prob > 0:
+            entry["close"] = close
+        index.append(entry)
         if len(previews) < a.preview:
             previews.append((np.asarray(img), PALETTE[lab]))
         if (i + 1) % 200 == 0:

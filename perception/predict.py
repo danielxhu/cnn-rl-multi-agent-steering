@@ -156,6 +156,10 @@ def main(argv=None):
                         "plus <name>_clean.png, the parse re-drawn by the generator's renderer")
     p.add_argument("--region-by-agents", action="store_true",
                    help="a region box holding an agent is a start, whatever the S / G letter")
+    p.add_argument("--goal-mode", choices=["pairs", "exits"], default=None,
+                   help="override the run's: exits = every G box is an exit (sketch v5)")
+    p.add_argument("--heat-thresh", type=float, default=None, help="override the run's")
+    p.add_argument("--heat-nms-factor", type=float, default=None, help="override the run's")
     a = p.parse_args(argv)
     if not a.image and not a.dir:
         p.error("give --image or --dir")
@@ -166,6 +170,9 @@ def main(argv=None):
         pr.ecfg = replace(pr.ecfg, wall_mode=a.wall_mode)
     if a.region_by_agents:
         pr.ecfg = replace(pr.ecfg, region_by_agents=True)
+    for k in ("goal_mode", "heat_thresh", "heat_nms_factor"):
+        if getattr(a, k) is not None:
+            pr.ecfg = replace(pr.ecfg, **{k: getattr(a, k)})
     if a.image:
         paths = [Path(a.image)]
     elif a.photo:

@@ -113,10 +113,11 @@ def scene_files(root: Path) -> list:
 
 class SceneDataset(Dataset):
     def __init__(self, root, size, instance_targets=False, layouts=None, limit=None,
-                 cache=False):
+                 cache=False, heat_sigma=1.0):
         self.root = Path(root)
         self.size = int(size)
         self.instance_targets = bool(instance_targets)
+        self.heat_sigma = float(heat_sigma)         # heat peak sigma, x drawn / nominal radius
         self.cache = bool(cache)
         if not self.root.is_dir():
             raise FileNotFoundError(f"dataset directory not found: {self.root}")
@@ -188,7 +189,8 @@ class SceneDataset(Dataset):
             "index": i,
         }
         if self.instance_targets:
-            heat, dirs, mask = instance_targets(self.scenes[i], self.worlds[i], self.size)
+            heat, dirs, mask = instance_targets(self.scenes[i], self.worlds[i], self.size,
+                                                self.heat_sigma)
             out["heat"] = torch.from_numpy(heat)
             out["dir"] = torch.from_numpy(dirs)
             out["dir_mask"] = torch.from_numpy(mask)

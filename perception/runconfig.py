@@ -69,6 +69,9 @@ class TrainConfig:
     preview_every: int = 10
     deterministic: bool = False
     init: str | None = None                # start from this checkpoint's weights (fine-tuning)
+    # heat peak sigma, x the agent's drawn radius (JSON "radius", sketch v5) or else
+    # the nominal radius; 1.0 = the E5 / v4 targets (DESIGN_SKETCH §9.2)
+    heat_sigma: float = 1.0
 
 
 @dataclass
@@ -91,6 +94,11 @@ class ExtractConfig:
     line_border_reach: float = 4.5         # ends this close to the edge are extended onto it
     # regions: a box holding an agent is a start whatever its letter says (sketch input)
     region_by_agents: bool = False
+    # heat-mode peak NMS distance, x nominal radius; None = nms_factor (E5 / v4)
+    heat_nms_factor: float | None = None
+    # "pairs": start-goal boxes paired one-to-one (E5 / v4); "exits": every goal box is
+    # an exit any agent may use, start boxes without a parsed agent are dropped (§9.3)
+    goal_mode: str = "pairs"
 
 
 @dataclass
@@ -241,6 +249,9 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
     g.add_argument("--init", default=None,
                    help="start from the model weights of this checkpoint (same arch), with a "
                         "fresh optimiser and schedule: fine-tuning on new data")
+    g.add_argument("--heat-sigma", dest="heat_sigma", type=float, default=None,
+                   help="heat target sigma x the drawn agent radius (JSON 'radius'), else x the "
+                        "nominal radius; 1.0 = E5 / v4, sketch v5 trains with 0.5")
 
     g = p.add_argument_group("extract")
     g.add_argument("--ring-thresh", dest="ring_thresh", type=float, default=None)
@@ -255,4 +266,9 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
     g.add_argument("--line-join", dest="line_join", type=float, default=None)
     g.add_argument("--region-by-agents", dest="region_by_agents", action="store_const", const=True,
                    default=None, help="a region box holding an agent is a start (S / G misread)")
+    g.add_argument("--heat-nms-factor", dest="heat_nms_factor", type=float, default=None,
+                   help="heat-peak NMS distance x nominal radius (default: --nms-factor); v5: 0.6")
+    g.add_argument("--goal-mode", dest="goal_mode", choices=["pairs", "exits"], default=None,
+                   help="pairs: start-goal boxes paired (E5); exits: every goal box is an exit, "
+                        "agents may use any, empty start boxes dropped (sketch v5)")
     return p

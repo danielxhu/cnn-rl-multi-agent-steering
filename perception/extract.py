@@ -27,6 +27,18 @@ Invariants:
   ``sim_config(base_cfg, parsed)``, never the generator's config as is.
 - ``extract`` returns ``None`` (parse failure) only when there is no start–goal
   pair or no agent; everything else comes back with ``diagnostics``.
+- ``goal_mode="exits"`` (sketch v5, DESIGN_SKETCH §9.3): no pairing. Every
+  start box holding a parsed agent (its centre within one agent radius of the
+  box: agents are drawn on box edges too) is a start (empty ones are dropped and
+  counted in ``diagnostics["dropped_empty_starts"]``), every goal box is an
+  exit; the scene carries ``starts`` / ``exits``, agents carry no goal, so
+  ``Scene.goal_for`` is the exit set. The parse fails only without an agent
+  or an exit. A box lying mostly inside a larger one (the walled-in hole of
+  an agent ring among touching agents) is dropped first
+  (``diagnostics["dropped_nested_boxes"]``). ``"pairs"`` (default) is the E5
+  behaviour.
+- Heat-mode peaks are suppressed within ``heat_nms_factor`` (default:
+  ``nms_factor``) nominal radii; the ring vote always uses ``nms_factor``.
 """
 from __future__ import annotations
 
@@ -160,7 +172,8 @@ def detect_agents_ring(agent_mask, r_px, lw_px, ecfg=ExtractConfig()) -> list:
 
 
 def detect_agents_heat(heat, r_px, ecfg=ExtractConfig()) -> list:
-    return _peaks(np.asarray(heat, np.float32), ecfg.heat_thresh, ecfg.nms_factor * r_px)
+    factor = ecfg.nms_factor if ecfg.heat_nms_factor is None else ecfg.heat_nms_factor
+    return _peaks(np.asarray(heat, np.float32), ecfg.heat_thresh, factor * r_px)
 
 
 def ring_outer_px(r_px: float, lw_px: float) -> float:
@@ -532,18 +545,49 @@ def _boxes_by_agents(start_mask, goal_mask, scale, world, ecfg, seal, agent_pos)
     return starts, goals
 
 
-def extract_regions(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), agent_pos=None):
-    """[(start, goal)] pairs sorted by start (x0, y0); plus the number of unpaired regions.
+def extract_boxes(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), agent_pos=None):
+    """(start boxes, goal boxes) in world units, unpaired.
 
     With ``ecfg.region_by_agents`` and agent positions (world units), boxes are
     found on the union of both classes and a box holding an agent is a start.
     """
     seal = pixel_geometry(world, start_mask.shape[0])["lw_px"]
     if ecfg.region_by_agents and agent_pos is not None:
-        starts, goals = _boxes_by_agents(start_mask, goal_mask, scale, world, ecfg, seal, agent_pos)
-    else:
-        starts = [r for r, _ in _boxes(start_mask, scale, world, ecfg.min_region_area_px, seal)]
-        goals = [r for r, _ in _boxes(goal_mask, scale, world, ecfg.min_region_area_px, seal)]
+        return _boxes_by_agents(start_mask, goal_mask, scale, world, ecfg, seal, agent_pos)
+    starts = [r for r, _ in _boxes(start_mask, scale, world, ecfg.min_region_area_px, seal)]
+    goals = [r for r, _ in _boxes(goal_mask, scale, world, ecfg.min_region_area_px, seal)]
+    return starts, goals
+
+
+def _drop_nested(starts, goals):
+    """(starts, goals, n dropped) without boxes lying mostly (≥ half their area)
+    inside a larger box of either kind. Drawn boxes never nest, but the hole of
+    an agent ring walled in by touching neighbours is cut off from its box and
+    would come back as a tiny box of its own (sketch v5 close agents)."""
+    allb = starts + goals
+
+    def inside(b):
+        for a in allb:
+            if a is b or a.width * a.height <= b.width * b.height:
+                continue
+            ix = max(0.0, min(a.x1, b.x1) - max(a.x0, b.x0))
+            iy = max(0.0, min(a.y1, b.y1) - max(a.y0, b.y0))
+            if ix * iy >= 0.5 * b.width * b.height:
+                return True
+        return False
+
+    keep_s = [b for b in starts if not inside(b)]
+    keep_g = [b for b in goals if not inside(b)]
+    return keep_s, keep_g, len(allb) - len(keep_s) - len(keep_g)
+
+
+def extract_regions(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), agent_pos=None):
+    """[(start, goal)] pairs sorted by start (x0, y0); plus the number of unpaired regions.
+
+    With ``ecfg.region_by_agents`` and agent positions (world units), boxes are
+    found on the union of both classes and a box holding an agent is a start.
+    """
+    starts, goals = extract_boxes(start_mask, goal_mask, scale, world, ecfg, agent_pos)
     pairs = []
     if len(starts) == 1 and len(goals) == 1:
         pairs = [(starts[0], goals[0])]
@@ -603,11 +647,25 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
 
     # --- regions (after agents: with region_by_agents a box holding one is a start)
     agent_pos = [px_to_world(W, S, cx, cy) for cx, cy in centers]
-    pairs, unpaired = extract_regions(labels == C_START, labels == C_GOAL, scale, world, ecfg,
-                                      agent_pos)
-    diag["unpaired_regions"] = unpaired
-    if not pairs:
-        return None
+    if ecfg.goal_mode == "exits":
+        boxes, goals = extract_boxes(labels == C_START, labels == C_GOAL, scale, world, ecfg, agent_pos)
+        boxes, goals, diag["dropped_nested_boxes"] = _drop_nested(boxes, goals)
+        # an agent may be drawn on its box's edge: within one agent radius counts
+        tol = float(world["agent_radius"])
+        starts = [b for b in boxes if any(b.distance_to(p) <= tol for p in agent_pos)]
+        diag["dropped_empty_starts"] = len(boxes) - len(starts)
+        if not goals:
+            return None
+        starts.sort(key=lambda r: (r.x0, r.y0))
+        goals.sort(key=lambda r: (r.x0, r.y0))
+    elif ecfg.goal_mode == "pairs":
+        pairs, unpaired = extract_regions(labels == C_START, labels == C_GOAL, scale, world, ecfg,
+                                          agent_pos)
+        diag["unpaired_regions"] = unpaired
+        if not pairs:
+            return None
+    else:
+        raise ValueError(f"unknown goal_mode {ecfg.goal_mode!r}")
 
     # --- static geometry --------------------------------------------------
     obstacles = extract_obstacles(obst_mask, wall_mask, scale, world, ecfg)
@@ -619,6 +677,13 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
         raise ValueError(f"unknown wall_mode {ecfg.wall_mode!r}")
 
     # --- assemble -------------------------------------------------------
+    if ecfg.goal_mode == "exits":                       # any exit counts: no per-agent goals
+        agents = [Agent(pos=(float(wx), float(wy)), heading=float(th))
+                  for (wx, wy), th in zip(agent_pos, thetas)]
+        scene = Scene(walls=walls, obstacles=obstacles, agents=agents,
+                      start_region=starts[0] if starts else None, goal_region=goals[0],
+                      layout="parsed", groups=[], starts=starts, exits=goals)
+        return Parsed(scene=scene, size=S, world=_parsed_world(world, S, ecfg), diagnostics=diag)
     agents = []
     for (cx, cy), th in zip(centers, thetas):
         wx, wy = px_to_world(W, S, cx, cy)
@@ -628,10 +693,14 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
     scene = Scene(walls=walls, obstacles=obstacles, agents=agents,
                   start_region=pairs[0][0], goal_region=pairs[0][1],
                   layout="parsed", groups=list(pairs))
+    return Parsed(scene=scene, size=S, world=_parsed_world(world, S, ecfg), diagnostics=diag)
+
+
+def _parsed_world(world, S, ecfg) -> dict:
     pw = dict(world)
     pw["img_size"] = S
     pw["wall_thickness"] = float(world["wall_thickness"]) if ecfg.wall_mode == "lines" else 0.0
-    return Parsed(scene=scene, size=S, world=pw, diagnostics=diag)
+    return pw
 
 
 def _group_of(p, pairs) -> int:
