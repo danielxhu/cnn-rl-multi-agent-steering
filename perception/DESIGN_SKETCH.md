@@ -733,3 +733,173 @@ parsed and simulated as exits. Thin lines are not addressed.
 | `perception`: `test_sketch5_close_agents_labels` | touching drawn agents still give one heat peak each at the JSON centres |
 | `perception`: `test_exits_mode_drops_empty_start` | a start box without agents is dropped; two exits both kept; agent goal is the exit set |
 | `perception`: `test_heat_nms_separates_touching` | two heat peaks 1.2 nominal radii apart are both detected with `heat_nms_factor` 0.6 |
+
+---
+
+## 10. Sketch v6: recognise by pattern, not by line width (spec, 16 Oct 2026)
+
+**Why.** The v5 model on seven real drawings (`results/old_drawings_v5/`,
+`results/drawings_v5/`): every agent count and every real start right, but
+four failures, all from drawings that only the *shape* of the strokes can
+explain:
+
+| Observed (v5) | Drawing |
+|---|---|
+| a 5.5 × 6 G box read as a start box, its letter G read as an agent | `drawings_v5/30f1…` |
+| the two sides of a 6-unit-wide G box read as two walls; the exit kept only a 4 × 9 corner | `drawings_v5/f2e8…` |
+| a 2 × 10 sliver at a room corner read as an exit | `drawings_v5/823f…` |
+| the 7 × 11 gap between an S box and a room wall read as an exit | `old_drawings_v5/a7e1…` |
+
+Cause, from the generator: **line width tells walls from box sides.** A wall
+is drawn at pen × U(1.0, 2.2) (`wall_width_mult`), a box side at pen × 0.6, so
+walls are on average ≈ 2.7 × wider than box sides in every sketch set, and
+the network uses the shortcut. It also never sees a box with a side under 10
+units (16 mm on paper), a box closer than `wall_half + region_margin` = 5.5
+units to a wall, or a corner sliver. The §9 advice "draw walls with a thick
+marker" served the shortcut and is withdrawn: after v6 the author draws
+walls and boxes with the same pen, thin or thick.
+
+Decision (author, 16 Oct): recognise walls, boxes, agents and obstacles by
+their **pattern** — a box is a closed rectangle with a letter in it, a wall
+an open line, an agent a small circle with a tail, an obstacle a filled blob
+— and make line width carry no information. Three parts: equal widths (§10.1),
+hard cases only pattern separates (§10.2), and an explicit letter head whose
+detections decide which closed rectangles are boxes and of which kind
+(§10.3–10.4).
+
+### 10.1 Generator: one width law for every line (`--style sketch6`)
+
+`SKETCH_V6 = replace(SKETCH_V5, …)`; v1–v5 stay pixel-identical (hashes).
+
+- Walls, box sides, agent circles and tails, obstacle outlines: each element's
+  stroke width = pen × `ew()` × U(**0.45, 1.6**), drawn **independently for
+  every element from the same law** (no `wall_width_mult`, no fixed 0.6 for
+  box sides). Any element, box sides included, is "gone over twice" (width ×
+  U(1.6, 2.0)) with probability 0.2.
+- `element_width` widens to (0.5, 2.0), so one drawing holds thin walls next
+  to thick boxes and the reverse.
+- Probe style `sketch6swap` (test only): walls always at the thin end
+  (U(0.45, 0.7)), box sides always at the thick end (U(1.3, 1.6)); the reverse
+  of what v1–v5 taught. A model that has learned the pattern scores the same
+  on it as on `test_sketch6`.
+
+### 10.2 Generator: hard cases (`--layout mixed4`)
+
+New layout options with defaults that keep every existing layout and mix
+byte-identical (`sim` hashes): `box_short_min` (10), `box_near_wall_prob`
+(0), `corner_gap_prob` (0), `slit_prob` (0). `MIXES["mixed4"]` = `mixed3`
+families with:
+
+- **small and narrow boxes**: short side U(`box_short_min` = **6**, 16),
+  long side as now; a start box still holds every agent it is given at the
+  simulator's spacing (fewer agents rather than a box they do not fit);
+- **boxes near walls**: with probability **0.3** a box is placed with a gap
+  of U(0.3, 2.0) units between its side and a wall's or the frame's surface,
+  inside or outside a room (the drawn strokes touch or nearly); agents keep
+  the simulator's wall clearance, only the box comes closer;
+- **room corners left open or crossed**: with probability **0.5** per room
+  corner, the two walls stop U(0.5, 3) short of each other or one runs U(0.5,
+  4) past the other (the slivers and gaps of real drawings);
+- **slits**: with probability **0.3** per scene, two parallel walls U(3, 8)
+  units apart and U(8, 25) long, alone or as part of a room — the shape of a
+  narrow box without a letter;
+- decoy rooms as in v5. Every scene stays solvable for every agent.
+
+### 10.3 Letter head (model, targets, loss)
+
+- **JSON**: sketch6 scenes record `"letters"`: one `{"kind": "S"|"G",
+  "pos": [x, y], "height": h}` per drawn box, world units, after the photo
+  perspective, like every other coordinate. Earlier styles do not write it
+  (JSON hashes unchanged).
+- **Model**: `ModelConfig.letter_head` (default False): a 1 × 1 conv → 2
+  channels, sigmoid = letter heat for S and for G, on the same features as
+  the other heads (+ 50 parameters). Old checkpoints load unchanged.
+- **Targets** (`targets.py`): per letter a Gaussian at `pos` with σ =
+  0.3 × `height` (px), peak pixel = 1, in its kind's channel — the agent heat
+  convention.
+- **Loss**: the agent heat focal loss on each channel, weight
+  `lambda_letter` (1.0), normalised by the number of letters; scenes without
+  `"letters"` (rendered sets, earlier sketch sets) contribute **no** letter
+  loss (a per-sample mask, not a zero target).
+- **Fine-tuning**: `--init` a checkpoint without a letter head loads every
+  matching tensor and leaves the new head at its initialisation (bias −2.19
+  as for agent heat); any *other* mismatch still raises.
+
+### 10.4 Extractor: boxes need a letter (`ExtractConfig`)
+
+New fields, defaults = v5 behaviour:
+
+- `letter_gate` (False; requires a letter head): every box the segmentation
+  yields (start or goal) is kept only if the max letter heat inside it,
+  over both channels, is ≥ `letter_thresh` (0.3); its **kind is the
+  stronger channel there**, not the segmentation's class and not
+  `region_by_agents`. Dropped boxes are counted in
+  `diagnostics["dropped_no_letter"]`. Pixels of a dropped box become
+  background for wall extraction (its sides are not turned into walls by
+  this step; walls come from the wall mask as now).
+- `letter_suppress_agents` (True, only with `letter_gate`): an agent peak
+  within 1.5 nominal radii of a letter peak ≥ `letter_thresh` whose score is
+  higher than the agent's is dropped (`diagnostics["agents_on_letters"]`).
+- `min_box_side` (0 = off; v6 runs use **3.0** units): boxes whose shorter
+  side is below it are dropped (`diagnostics["dropped_thin_boxes"]`).
+- `evaluate.py --tune-extract` additionally grids `letter_thresh` ∈ {0.2,
+  0.3, 0.4, 0.5} when the run has a letter head; the result is written to
+  `best` like the other thresholds. `evaluate.py` / `predict.py` accept
+  `--letter-gate`, `--no-letter-gate`, `--letter-thresh`, `--min-box-side`.
+- The run's own `ExtractConfig` (saved with the checkpoint) sets
+  `letter_gate` on for v6, so a plain `predict.py` uses it. On rendered
+  images (no letters drawn) the gate must be off: `evaluate.py` turns it off
+  for any set whose `dataset.json` style is not a sketch style, and says so.
+
+### 10.5 Datasets and training
+
+- `train_sketch6` / `val_sketch6` / `test_sketch6`: 5000 / 500 / 1000, seeds
+  160 / 260 / 360, `--style sketch6 --layout mixed4`, agents 1–8, obstacles
+  0–6; `test_sketch6swap`: 500, seed 361, `--style sketch6swap --layout
+  mixed4`. All in `make_datasets.py`.
+- Train: `--init` the v5 model (`sketch5_ft_seed0/ckpt_best.pt`), train
+  `train_sketch6 train_aug3`, val `val_sketch6`, 256 px, `unet24x4`, instance
+  head, **letter head**, `--wall-mode lines --region-by-agents --goal-mode
+  exits --heat-sigma 0.5 --heat-nms-factor 0.6 --min-box-side 3
+  --letter-gate`, 30 epochs, lr 5e-4. ≈ 1.5–2 h on the GTX 1070.
+
+### 10.6 One command (`scripts/run_v6.py`)
+
+Like `run_v5.py`, resumable, every step skipped when its output exists:
+datasets → train → `--tune-extract` on `val_sketch6` → evaluations → aggregate
+→ real drawings → git add / commit / push.
+
+- Evaluations (`E:\cnn-eval`): v6 on `test`, `test_aug3`, `test_sketch4`,
+  `test_sketch5`, `test_sketch6`, `test_sketch6swap` (tuned thresholds); v6
+  with `--no-letter-gate` on the three sketch-5/6 sets (`sketch6_nogate`);
+  v5 on `test_sketch6` and `test_sketch6swap` (`sketch5_on_sketch6`).
+  Aggregate → `results/sketch6`.
+- Real drawings: every photo in `results/old_drawings_v4/input` and
+  `results/drawings_v5/input` → `results/drawings_v6/`, with
+  `compare_<name>.png` = photo | v5 clean | v6 overlay | v6 clean, and
+  `summary.md` as in `test_drawings.py` plus the dropped-box columns.
+- `test_drawings.py` gains `--run` default = the v6 run once it exists
+  (falls back to v5), so new drawings go through the newest model.
+
+### 10.7 Evaluation and what to expect
+
+One table: v5 vs v6 (gate on / off) on every set above, per-layout rows for
+`mixed4`. Must hold: rendered sets and `test_sketch4/5` do not regress by
+more than 0.5 point of `scene_usable`. Expected: v5 drops sharply on
+`test_sketch6swap` (it reads by width), v6 scores there within ~1 point of
+`test_sketch6`; on the seven real drawings the four failures in the table
+above are gone or reduced to "box dropped" (never "box invented").
+
+### 10.8 Tests to add
+
+| Test | Checks |
+|---|---|
+| `sim`: v1–v5 and every layout / mix unchanged; v6 determinism | hashes, as for v5 |
+| `sim`: `test_sketch6_width_law` | over 50 scenes, mean drawn wall width ≈ mean box side width (ratio 0.8–1.25); `sketch6swap` ratio < 0.6 |
+| `sim`: `test_mixed4_hard_cases` | boxes with short side < 10 present; boxes within 2 units of a wall present; every agent fits its box and can reach an exit |
+| `sim`: `test_sketch6_letters_json` | one letter per box, inside it, kind matches the box |
+| `perception`: `test_letter_targets` | peaks of value 1 at letter centres, right channel; no letters → mask 0 |
+| `perception`: `test_init_adds_letter_head` | a v5-shaped checkpoint initialises a letter-head model; an arch mismatch still raises |
+| `perception`: `test_letter_gate` | box without letter heat dropped; box with G heat but start class becomes an exit; gate off = v5 result |
+| `perception`: `test_agent_on_letter_suppressed` | agent peak on a stronger letter peak dropped, one 3 radii away kept |
+| `perception`: `test_min_box_side` | a 2 × 10 box dropped at 3.0, kept at 0 |
