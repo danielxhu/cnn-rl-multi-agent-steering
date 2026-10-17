@@ -57,14 +57,14 @@ def tuned(run_dir: Path, dry: bool):
     return best["heat_thresh"], best.get("heat_nms_factor", 0.6)
 
 
-def compare_image(drawing: Path, v4_clean: Path | None, v5_clean: Path, out: Path):
+def side_by_side(panels, out: Path, h: int = 480):
+    """[(label, image path)] -> one sheet, each panel scaled to height h; missing paths skipped."""
     from PIL import Image, ImageDraw
-    panels = [("drawing", Image.open(drawing).convert("RGB"))]
-    if v4_clean is not None and v4_clean.exists():
-        panels.append(("v4", Image.open(v4_clean).convert("RGB")))
-    panels.append(("v5", Image.open(v5_clean).convert("RGB")))
-    h = 480
-    ims = [(t, im.resize((max(1, int(im.width * h / im.height)), h))) for t, im in panels]
+    ims = []
+    for t, q in panels:
+        if q is not None and Path(q).exists():
+            im = Image.open(q).convert("RGB")
+            ims.append((t, im.resize((max(1, int(im.width * h / im.height)), h))))
     sheet = Image.new("RGB", (sum(im.width for _, im in ims) + 12 * (len(ims) - 1), h + 26), "white")
     d = ImageDraw.Draw(sheet)
     x = 0
@@ -73,6 +73,10 @@ def compare_image(drawing: Path, v4_clean: Path | None, v5_clean: Path, out: Pat
         d.text((x + 6, 6), t, fill=(30, 30, 30))
         x += im.width + 12
     sheet.save(out)
+
+
+def compare_image(drawing: Path, v4_clean: Path | None, v5_clean: Path, out: Path):
+    side_by_side([("drawing", drawing), ("v4", v4_clean), ("v5", v5_clean)], out)
 
 
 def main(argv=None):
