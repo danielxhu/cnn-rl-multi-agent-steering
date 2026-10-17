@@ -14,7 +14,10 @@ style (``--style sketch2``) and ``--only '*sketch2'`` makes only them; likewise
 ``*_sketch3`` (``--style sketch3``) and ``--only '*sketch3'``, and ``*_sketch4``
 (``--style sketch4`` on ``--layout mixed2``, which adds free-form layouts), and
 ``*_sketch5`` (``--style sketch5`` on ``--layout mixed3``: rooms next to boxes,
-several start / exit boxes, touching agents; DESIGN_SKETCH §9.5).  ``agent_gap``
+several start / exit boxes, touching agents; DESIGN_SKETCH §9.5), and
+``*_sketch6`` / ``test_sketch6swap`` (``--style sketch6`` / ``sketch6swap`` on
+``--layout mixed4``: one width law for every line, hard cases, letters in the
+JSON; DESIGN_SKETCH §10.5).  ``agent_gap``
 is not a ``generate.py`` flag, so each spacing set gets a one-line JSON config.
 """
 from __future__ import annotations
@@ -34,6 +37,7 @@ import _paths  # noqa: E402,F401
 BASE = ["--layout", "mixed", "--agents", "1-8", "--obstacles", "0-6"]
 BASE2 = ["--layout", "mixed2", "--agents", "1-8", "--obstacles", "0-6"]   # + free-form layouts
 BASE3 = ["--layout", "mixed3", "--agents", "1-8", "--obstacles", "0-6"]   # + rooms by boxes, several boxes
+BASE4 = ["--layout", "mixed4", "--agents", "1-8", "--obstacles", "0-6"]   # mixed3 + hard cases
 AUG = {
     0: [],
     1: ["--jitter-color", "10", "--jitter-line-width", "0.5", "--jitter-background", "8",
@@ -83,6 +87,12 @@ DATASETS = [
     ("train_sketch5", 5000, BASE3 + ["--style", "sketch5", "--seed", "150"]),
     ("val_sketch5", 500, BASE3 + ["--style", "sketch5", "--seed", "250"]),
     ("test_sketch5", 1000, BASE3 + ["--style", "sketch5", "--seed", "350"]),
+    # v6: one width law for every line, hard cases, letters in the JSON (DESIGN_SKETCH §10)
+    ("train_sketch6", 5000, BASE4 + ["--style", "sketch6", "--seed", "160"]),
+    ("val_sketch6", 500, BASE4 + ["--style", "sketch6", "--seed", "260"]),
+    ("test_sketch6", 1000, BASE4 + ["--style", "sketch6", "--seed", "360"]),
+    # probe: walls thin, box sides thick (the reverse of v1-v5); a pattern model scores as on test_sketch6
+    ("test_sketch6swap", 500, BASE4 + ["--style", "sketch6swap", "--seed", "361"]),
 ]
 SKETCH_COST = 2.0            # a sketch scene costs about twice a rendered one
 

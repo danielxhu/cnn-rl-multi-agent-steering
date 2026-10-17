@@ -2,7 +2,7 @@
  "versions": {
   "numpy": "2.5.4",
   "opencv": "5.0.0",
-  "pillow": "12.3.0",
+  "pillow": "13.0.0",
   "platform": "Linux-x86_64"
  },
  "sets": {
@@ -21,6 +21,10 @@
   "sketch4": {
    "json": "2f9746ac7ea4c8fb7205f9538eb318e30798599445ab4950e264e844e9b3eb06",
    "pixels": "64745e06df8188f43da022b4f0469052026edf7ef9c6e33d3292c59d449cc371"
+  },
+  "sketch5": {
+   "json": "e9e8a1855c87da9b659006a143105231606c5ae07aa3e3f8c8362f1a1cab5fc4",
+   "pixels": "8c4e65973bbda20b4780b9d8e8bf64ee60ac2118334c0e1b18fe06d01a9e1769"
   },
   "render_open": {
    "json": "a5c59e3204b4565684e1be3d2c5ff718c352f5ed7fdd230f77475acb73ed7c37",
@@ -58,9 +62,25 @@
    "json": "5df49bfd35d17d37b555d0a4f4eccc62aa5d63f4dc19d5dab00b2572fc16cfef",
    "pixels": "c0ae1b41c3d8ae7687c5e48185f8c7673b0506dcd65dad7829b0845994b4e5b1"
   },
+  "render_boxrooms": {
+   "json": "392f1b8f33ad31a135d5c43d7a6cbd5692d4009c738bdeb263f5626a3477f82b",
+   "pixels": "335de6331b6ce4ef1db93994bc8af07bc272f957ed5008fa59e1a6cdd8bbed60"
+  },
+  "render_walls_multi": {
+   "json": "81f4a5657f302aa17074af0db22d96bffce11cc15189551df037c11a716721e2",
+   "pixels": "88e9d1ae69ead70c626915f2b1986f9f7d6e459e0b1cf9408f253b38bf5ab5b6"
+  },
+  "render_rooms_multi": {
+   "json": "0913e4b6ffd4f31b3306e12a1d2ef3204bcb2551bb224823fd2481c313e6b0ae",
+   "pixels": "dd4de59a9673779c42f7753c9af5488ecf5cb3e00694cc26c88431e50a0b23dd"
+  },
   "render_mixed2": {
    "json": "655b4edc4b5f107cda8dedb4e03cc7a699eb04af53f94b9b624b8d31b7adf30d",
    "pixels": "b8e9ae7f41f2a89722240c91b8465e2a52719426f8e7393e34587ec44240a8a1"
+  },
+  "render_mixed3": {
+   "json": "5bed7331d841776daba48c68914adab3ee4f85e251999a6edb94da9ef953d3ba",
+   "pixels": "576205326bebbdb60d5ec0a6f7ab032188831272e50aeb7a941c62c3ae9238bd"
   },
   "render_mixed_hard_aug3": {
    "json": "fafb2e1c0e6325ce8fac2bcbbe9ca7d5a40de1ab547efa6450f9c1e87368bd7a",

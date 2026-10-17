@@ -58,6 +58,14 @@ Invariants:
   hard spacing) and each agent's drawn radius in the JSON (``"radius"``).
   Scenes with several start / exit boxes (``Scene.starts`` / ``exits``, any
   style) draw every box and write them back as ``starts`` / ``exits``.
+  ``SKETCH_V6`` (``--style sketch6``, DESIGN_SKETCH §10.1) takes the
+  information out of line width: every element (a wall, a box, an agent, an
+  obstacle outline) gets its own width from one law, pen × element × U(0.45,
+  1.6), gone over twice (× U(1.6, 2.0)) with p = 0.2, and writes each box's
+  letter (kind, centre, height) to the JSON (``"letters"``). The probe style
+  ``sketch6swap`` draws walls thin and box sides thick, the reverse of v1-v5.
+  Both cap every stroke at 12 px (at 512; a thick marker gone over twice) and
+  draw every letter at least 2.5 world units tall (~4 mm on the sheet).
 """
 from __future__ import annotations
 
@@ -168,6 +176,19 @@ class SketchStyle:
     close_prob: float = 0.0                     # scenes with packed start boxes (generate.py)
     record_radius: bool = False                 # write each agent's drawn radius to the JSON
 
+    # --- v6 options (defaults reproduce v5 exactly; see SKETCH_V6) ---
+    width_law: tuple | None = None              # every element's width, x pen x element: U(law)
+    wall_law: tuple | None = None               # probe (sketch6swap): walls' own law ...
+    box_law: tuple | None = None                # ... and box sides'
+    double_prob: float = 0.0                    # an element gone over twice ...
+    double_mult: tuple = (1.6, 2.0)             # ... is this much wider
+    agent_width_cap: float = 0.45               # a ring stays hollow: width <= this x drawn radius
+    box_width_cap: float = 0.25                 # box sides <= this x the box's shorter side
+    record_letters: bool = False                # write each box's letter to the JSON
+    letter_min_world: float = 0.0               # letters at least this tall (world units); a drawn
+                                                # box too small for it is drawn larger about its centre
+    stroke_cap_px: float | None = None          # every stroke's final width at most this (px at 512)
+
 
 SKETCH_V2 = SketchStyle(
     pen_width=(2.0, 5.0), digital_prob=0.35,
@@ -182,8 +203,12 @@ SKETCH_V3 = replace(
 SKETCH_V4 = replace(SKETCH_V3, agent_scale=(0.6, 2.0), element_width=(0.55, 1.7))
 SKETCH_V5 = replace(SKETCH_V4, letter_scale=(0.25, 1.0), letter_pen=(0.5, 0.7), agent_cap=0.6,
                     close_prob=0.4, record_radius=True)
+SKETCH_V6 = replace(SKETCH_V5, element_width=(0.5, 2.0), width_law=(0.45, 1.6), double_prob=0.2,
+                    record_letters=True, letter_min_world=2.5, stroke_cap_px=12.0)
+# probe only: walls thin, box sides thick, never gone over twice
+SKETCH_V6_SWAP = replace(SKETCH_V6, wall_law=(0.45, 0.7), box_law=(1.3, 1.6), double_prob=0.0)
 STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2, "sketch3": SKETCH_V3, "sketch4": SKETCH_V4,
-          "sketch5": SKETCH_V5}
+          "sketch5": SKETCH_V5, "sketch6": SKETCH_V6, "sketch6swap": SKETCH_V6_SWAP}
 
 
 # --------------------------------------------------------------- primitives
@@ -308,6 +333,7 @@ class Drawing:
     dropout_seed: int | None = None              # v3: gaps along the ink
     dropout_frac: float = 0.0
     record_radius: bool = False                  # v5: agents' drawn radii go to the JSON
+    record_letters: bool = False                 # v6: each box's letter goes to the JSON
 
 
 # ----------------------------------------------------------------- perturb
@@ -521,6 +547,14 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
     # v4: every element its own pen (drawn only when on, so v1-v3 keep their stream)
     ew = (lambda: rng.uniform(*st.element_width)) if st.element_width else (lambda: 1.0)
 
+    def law(kind):
+        """v6: one width law for every element (x pen x element), or the probe's own."""
+        own = {"wall": st.wall_law, "box": st.box_law}.get(kind)
+        m = rng.uniform(*(own or st.width_law))
+        if st.double_prob > 0 and rng.random() < st.double_prob:
+            m *= rng.uniform(*st.double_mult)
+        return m
+
     dead = _dead_mask(cfg, scene, n) if fill_unreachable else None
     hatch = []
     if dead is not None and rng.random() < st.hatch_prob:
@@ -533,9 +567,16 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         a, b = P(reg.x0, reg.y1), P(reg.x1, reg.y0)
         quad = np.array([[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]])
         quad = quad + rng.normal(0, st.region_corner_sigma * k, (4, 2))
+        if st.letter_min_world > 0:                    # v6: room for the smallest letter
+            quad = _fit_letter(quad, st.letter_min_world * cfg.scale / st.letter_height_frac)
         mr = mk * ew()
+        if st.width_law:                               # v6: the common law, capped by the box size
+            short = min(reg.width, reg.height) * cfg.scale
+            mr = min(mr * law("box"), st.box_width_cap * short)
+        else:
+            mr = mr * 0.6
         sides = [_stroke(_wobbly_line(quad[i], quad[(i + 1) % 4], rng, 1.3 * k, st.region_overshoot),
-                         rng, mr * 0.6, st.width_var) for i in range(4)]
+                         rng, mr, st.width_var) for i in range(4)]
         regions.append(DrawnRegion(quad, sides, cls, ch, group=gi))
 
     boundary = {tuple(map(tuple, s)) for s in boundary_walls(cfg.world)}
@@ -544,7 +585,7 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         if (tuple(a), tuple(b)) in boundary:
             continue                                   # printed, drawn crisp in `draw`
         pts = _wobbly_line(P(*a), P(*b), rng, rng.uniform(*st.wall_wobble) * k, st.wall_overshoot)
-        w = mk * ew() * rng.uniform(*st.wall_width_mult)
+        w = mk * ew() * (law("wall") if st.width_law else rng.uniform(*st.wall_width_mult))
         walls.append((_stroke(pts, rng, w, st.width_var), (a, b)))
 
     obstacles = []
@@ -553,7 +594,8 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         stretch = st.stretch if st.obstacle_stretch is None else st.obstacle_stretch
         poly, _ = _wobbly_closed(c, r, rng, st.obstacle_wobble, stretch)
         mo = mk * ew()
-        outline = _stroke(np.vstack([poly, poly[:2]]), rng, mo * 0.7, st.width_var)
+        outline = _stroke(np.vstack([poly, poly[:2]]), rng, mo * (law("obstacle") if st.width_law else 0.7),
+                          st.width_var)
         solid = rng.random() < st.solid_fill_prob
         scr, over = [], 0.0
         if not solid:
@@ -593,15 +635,20 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         h = ag.heading + rng.normal(0, st.heading_sigma)
         tip = c + L * np.array([math.cos(h), -math.sin(h)])
         ma = mk * ew()
-        agents.append(DrawnAgent(_stroke(ring_pts, rng, ma * 0.6, st.width_var), turn,
-                                 _stroke(_wobbly_line(c, tip, rng, 0.8 * k, anchored=True), rng, ma * 0.6, st.width_var),
+        ma = min(ma * law("agent"), st.agent_width_cap * ra) if st.width_law else ma * 0.6
+        agents.append(DrawnAgent(_stroke(ring_pts, rng, ma, st.width_var), turn,
+                                 _stroke(_wobbly_line(c, tip, rng, 0.8 * k, anchored=True), rng, ma, st.width_var),
                                  c, tip))
 
     for reg in regions:                                # letters last: they avoid the drawn agents
         x0, y0 = reg.quad.min(0)
         x1, y1 = reg.quad.max(0)
         reg.letter_h = min(st.letter_height_frac * min(x1 - x0, y1 - y0), st.letter_max_px * k)
-        reg.letter_h *= rng.uniform(*st.letter_scale)
+        if st.letter_min_world > 0:                    # v6: letter_scale's spread above the floor
+            lo = max(st.letter_scale[0], st.letter_min_world * cfg.scale / reg.letter_h)
+            reg.letter_h *= rng.uniform(min(lo, st.letter_scale[1]), st.letter_scale[1])
+        else:
+            reg.letter_h *= rng.uniform(*st.letter_scale)
         if st.letter_in_pen:
             thin = rng.uniform(*st.letter_pen) if st.letter_pen else 0.7
             reg.letter_th = max(1, int(round(mk * ew() * thin)))
@@ -618,9 +665,28 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
     if st.dropout_prob > 0 and rng.random() < st.dropout_prob:
         drop_seed, drop_frac = int(rng.integers(2 ** 31)), rng.uniform(*st.dropout_frac)
 
+    if st.stroke_cap_px:                               # v6: no stroke wider than a thick marker
+        cap = st.stroke_cap_px * k
+        strokes = (hatch + [sd for r in regions for sd in r.sides] + [w for w, _ in walls]
+                   + [o.outline for o in obstacles] + [sc for o in obstacles for sc in o.scribble]
+                   + [a.ring for a in agents] + [a.tail for a in agents] + stray)
+        for sk in strokes:
+            sk.widths = np.minimum(sk.widths, cap)
+        for r in regions:
+            r.letter_th = min(r.letter_th, max(1, int(cap)))
     return Drawing(n, ink, paper, cfg.wall_half * cfg.scale, hatch, dead, regions, walls,
                    obstacles, agents, st.printed_ink, st.label_extra_wall, st.label_extra_agent,
-                   digital, stray, drop_seed, drop_frac, st.record_radius)
+                   digital, stray, drop_seed, drop_frac, st.record_radius, st.record_letters)
+
+
+def _fit_letter(quad, short_px):
+    """v6: stretch a drawn box about its centre, along any side shorter than
+    `short_px`, so the smallest allowed letter fits in it (only a box whose
+    corner jitter took it below that; the layouts' boxes are large enough)."""
+    c = quad.mean(0)
+    span = quad.max(0) - quad.min(0)
+    f = np.where(span < short_px, short_px / np.maximum(span, 1e-6), 1.0)
+    return c + (quad - c) * f
 
 
 def _boxes_to_draw(scene):
@@ -873,8 +939,11 @@ def drawn_scene(d: Drawing, H, scene, cfg) -> Scene:
         (x0, y1), (x1, y0) = W(q.min(0)), W(q.max(0))  # px min is world top-left
         # sorted on purpose: Region.__post_init__ loses y1 when given y0 > y1
         regs[(reg.group, reg.cls)] = Region(x0, y0, x1, y1)
+    letters = _drawn_letters(d, H, cfg) if d.record_letters else None
     if scene.starts is not None or scene.exits is not None:
-        return _drawn_multi(d, H, scene, cfg, walls, obstacles, regs)
+        out = _drawn_multi(d, H, scene, cfg, walls, obstacles, regs)
+        out.letters = letters
+        return out
     pairs = scene.groups or [(scene.start_region, scene.goal_region)]
     groups = [(regs.get((gi, C_START)), regs.get((gi, C_GOAL))) for gi in range(len(pairs))]
     goal_map = {g: groups[gi][1] for gi, (_, g) in enumerate(pairs)}
@@ -892,7 +961,22 @@ def drawn_scene(d: Drawing, H, scene, cfg) -> Scene:
     return Scene(walls=walls, obstacles=obstacles, agents=agents,
                  start_region=groups[0][0], goal_region=groups[0][1], layout=scene.layout,
                  groups=groups if scene.groups else [], seed=scene.seed,
-                 bottleneck=scene.bottleneck)
+                 bottleneck=scene.bottleneck, letters=letters)
+
+
+def _drawn_letters(d: Drawing, H, cfg) -> list:
+    """v6: one {"kind", "pos", "height"} per drawn box, world units, after the
+    perspective: the letter's ink centre and its height measured along the
+    warped vertical through that centre."""
+    out = []
+    for reg in d.regions:
+        cx, cy = reg.letter_centre
+        h = reg.letter_h
+        c, top, bot = _warp(H, [(cx, cy), (cx, cy - h / 2), (cx, cy + h / 2)])
+        x, y = _to_world(cfg, float(c[0]), float(c[1]))
+        out.append({"kind": reg.letter, "pos": [x, y],
+                    "height": float(np.linalg.norm(top - bot)) / cfg.scale})
+    return out
 
 
 def _drawn_radius(ring, c, cfg) -> float:

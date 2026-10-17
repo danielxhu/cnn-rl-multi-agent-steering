@@ -600,6 +600,143 @@ datasets of §9.5. v1–v4 and every older layout are unchanged: 15 sets
   narrow start box splits its label in two (the seal closing bridges one ring,
   not a row); pairs mode splits it the same way.
 
+**Sketch v6: pattern, not line width (17 Oct 2026, §10)**
+
+*Kept as specified.* `SKETCH_V6` / `--style sketch6` and the probe
+`sketch6swap`; the width law pen × element × U(0.45, 1.6), gone over twice
+(× U(1.6, 2.0)) with p = 0.2, `element_width` (0.5, 2.0); the four layout
+options with defaults that change nothing and `MIXES["mixed4"]` = the `mixed3`
+families; JSON `"letters"` for sketch6 only; `ModelConfig.letter_head` (+ 50
+parameters at unet24x4), letter targets (σ = 0.3 × height, peak 1), masked
+letter loss with `lambda_letter` 1.0; `--init` tolerating only a missing
+letter head; `letter_gate` / `letter_thresh` 0.3 / `letter_suppress_agents` /
+`min_box_side` with the diagnostics of §10.4; `evaluate.py` / `predict.py`
+flags; the gate off on rendered sets; the datasets of §10.5; `run_v6.py`;
+`test_drawings.py --run`. v1–v5 and every layout and mix are unchanged: the
+hash reference was re-recorded with the pre-v6 code (9710c19) and extended to
+v5 (`sketch5` on `mixed3`, `render_mixed3`, and the three multi-box families:
+20 sets); the 15 sets recorded before agree byte for byte, and all 20 agree
+after the change (images, labels, JSON; Linux-x86_64, numpy 2.5.4, OpenCV
+5.0.0, Pillow 13.0.0 — uv now resolves Pillow 13, same bytes as 12.3).
+
+*Additions and choices the spec left open.*
+
+- What an "element" is: a wall, a box (its four sides together), an agent (ring
+  and tail together), an obstacle outline. Letters keep v5's letter law;
+  hatching and obstacle fills stay relative to their element's pen.
+- Two caps the law needs to stay drawable: an agent ring at most 0.45 × its
+  drawn radius wide (a wider pen fills a small circle into a blob that reads
+  as an obstacle), box sides at most 0.25 × the box's shorter side (a 6-unit
+  box would otherwise close up). Measured over 50 `mixed4` scenes
+  (253 walls, 126 boxes), with the 12 px cap below: mean wall / box side
+  width 2.49 for sketch5, **1.04** for sketch6, **0.40** for sketch6swap.
+- `sketch6swap` is never gone over twice (a doubled wall would be thick).
+- Layout options are a `layouts.LayoutOptions` dataclass, passed as
+  `random_scene(opts=...)`, and `MIX_OPTIONS["mixed4"]` holds the v6 values
+  (6, 0.3, 0.5, 0.3); `generate.py` looks them up by `--layout`. Not `Config`
+  fields: `Config` is written to every `dataset.json`, which would change.
+  `random_scene(info=...)` returns the hard cases of a scene (for tests and
+  counts); `LayoutSpec.hard` carries them.
+- Where each hard case applies: `box_short_min` to the free-form families'
+  boxes (`walls`, `rooms`, `boxrooms`, `*_multi`; the fixed families keep
+  their 12–14-wide boxes); near walls to every family, as a step after the
+  layout is built — a box slides perpendicular to an axis-parallel wall (or
+  the frame) it overlaps by ≥ 3 units, ≤ 25 units, to U(0.3, 2.0) from its
+  surface, only if the swept area crosses no wall and boxes stay ≥ 6 apart;
+  corners to `room` and `boxrooms` (the `rooms` families meet walls in T
+  junctions, not corners): "short" pulls one wall's end back U(0.5, 3),
+  "crossed" runs one wall U(0.5, 4) past; a centre-line gap under 3 units
+  leaves the capsules touching, so no corner opens a passage; a wall meeting
+  the frame can only stop short. Slits: alone, or one new wall alongside an
+  existing axis-parallel wall (a slit along a room wall), kept off boxes by
+  `wall_half + region_margin` and ≥ 9 units from every other wall, so no
+  passage narrows below `min_bottleneck`; 60 tries, else none.
+- Measured on 200 `mixed4` scenes (515 boxes; 0 unsolvable; 0.09 s per
+  scene): boxes with a short side < 10 in 92 scenes (138 boxes); boxes within
+  2 units of a wall's or the frame's surface in 112 scenes (146 boxes); open
+  or crossed corners in 32 scenes (65 open, 38 crossed; only the 3 of 18 mix
+  entries with rooms have corners); slits in 52 scenes (26 %; the rest found
+  no free place).
+- `"letters"`: `pos` is the letter's ink centre through the photo
+  perspective, `height` the drawn letter height measured along the warped
+  vertical; `Scene.letters` (sim/scene.py) carries it and is written only
+  when set.
+- Model: the letter conv is created after every other layer, so a model's
+  random initialisation is the same with or without it (and v5 models are
+  untouched). `model.load_init_weights` does the tolerant `--init`.
+- Loss: at initialisation the letter loss is ≈ 3 × the agent-heat loss (two
+  channels of negatives, fewer letters than agents per batch, as the
+  normalisation by the number of letters implies; 66 against 19 on a smoke
+  batch). **Author's decision (17 Oct): `lambda_letter` defaults to 0.3**
+  (§10.3 said 1.0), and `run_v6.py` passes `--lambda-letter 0.3`, so the
+  weighted letter term starts at the agent-heat term's size (19.8 against
+  19.0) and does not pull the v5 backbone around. `log.csv` records
+  `loss_seg`, `loss_heat`, `loss_dir` and `loss_letter` as separate,
+  unweighted columns (`loss_letter` last, so a resumed older log keeps its
+  column order).
+- **Stroke cap (author, 17 Oct):** every stroke's final width — after the
+  width law and the "gone over twice" factor — is at most 12 px at 512
+  (scaled with `img_size`; ≈ 4 mm on the sheet, a thick marker gone over
+  twice), sketch6 and sketch6swap only. Over 50 `mixed4` scenes (px at 512,
+  per drawn segment): sketch6 walls median 3.23, p95 10.20, max 12.00; box
+  sides median 3.08, p95 9.87, max 12.00. sketch6swap walls 1.76 / 4.55 /
+  8.26, box sides 4.36 / 10.48 / 12.00. (sketch5 for comparison: walls 4.39 /
+  10.35 / 22.03, box sides 1.74 / 3.73 / 7.83.)
+- **Letter floor (author, 17 Oct):** sketch6 letters are at least 2.5 world
+  units tall (≈ 4 mm, ≈ 6 px at 256); `letter_scale`'s randomness is kept
+  above the floor (scale ~ U(max(0.25, floor / largest), 1)). The largest
+  letter that fits is 0.55 × the box's shorter side, so the floor needs a
+  short side ≥ 4.55 units; every box the layouts make is ≥ 6 (`mixed4`'s
+  `box_short_min`; the fixed families' are ≥ 12), so "enlarge the box within
+  its zone, else resample" never has to act in the layouts and is not coded
+  there. What remains is the drawing's corner jitter (σ 3 px), which could
+  take a 6-unit box's drawn quad under 4.55: such a quad is stretched about
+  its centre to fit the letter (`sketch._fit_letter`; 0 of 126 boxes in 50
+  scenes needed it). Measured: letters min 2.54, median 4.0 units.
+- **Gate order (author, 17 Oct)**, replacing §10.4's "only boxes with a
+  letter": (i) agent peaks on stronger letter peaks dropped; (ii) a box with
+  letter heat ≥ `letter_thresh` takes the letter's kind; (iii) a box without a
+  letter that holds a parsed agent (within one agent radius, as for empty
+  starts) is kept as a start (`diagnostics["kept_by_agents"]`); (iv) only a
+  box with neither is dropped (`dropped_no_letter`). Test
+  `test_letter_gate_keeps_box_with_agents`.
+- Extractor: with the gate, boxes are found on the union of both region
+  classes (the kind comes from the letter anyway), then pieces of one box are
+  rejoined: overlapping boxes merge (drawn boxes never overlap), and two
+  aligned pieces ≤ 3 agent radii apart merge when agent ink covers ≥ 30 % of
+  the strip between them — found on generated labels: a packed row of agents
+  across a narrow box cut it in two and the half without the letter was
+  dropped. Gate path only; v5 extraction is unchanged. The gate without a
+  letter map raises; `evaluate.py` / `predict.py` refuse `--letter-gate` for a
+  model without a letter head. Letter peaks for agent suppression use NMS at
+  one nominal radius.
+- `--tune-extract` grids `letter_thresh` as a second stage at the best heat
+  threshold / NMS factor (4 more points, chosen by `scene_usable`, then agent
+  F1), not as a fourth grid dimension (100 points, ≈ 40 min more on the
+  training machine); only when the gate is on. `--letter-grid` overrides.
+- `evaluate.py` turns the gate off for a set whose `dataset.json` records a
+  style that is not `sketch*`; a set without a recorded style (ingested
+  photos) keeps it. `metrics.json` records `letter_gate` per set.
+- `run_v6.py` evaluates the v5 model with v5's own tuned thresholds, and adds
+  `--results`, `--limit`, `--n-scale`, `--low` for smoke runs. The drawings
+  step finds 4 drawings in the repo (1 in `old_drawings_v4/input`, 3 in
+  `drawings_v5/input`), not seven: the other three earlier drawings were
+  never committed as inputs. `test_drawings.py` writes a v6 run's parses to
+  `results/drawings_v6` (v5 runs as before).
+- Checks on 140 sketch6 scenes drawn like `train_sketch6` (630 agents):
+  oracle extraction (ground-truth labels, heat and letter heat; gate on,
+  `min_box_side` 3, exits) gets `region_set_ok` in 140 / 140 at 512 and 256
+  and every agent with no extra; JSON ↔ drawing passes in 139 / 140, the
+  other is a pixel-measurement outlier (a heading 6.4° off on a short thick
+  tail; before the 12 px cap a second one, a centre 1.47 px off on a very thick
+  ring).
+- Tests: `sim` 24 (+ `test_sketch6_width_law`, which also checks the 12 px
+  cap and the 2.5-unit letter floor at 512 and 256, `test_mixed4_hard_cases`,
+  `test_sketch6_letters_json`; v6 and swap in the determinism test; the hash
+  sets grew from 15 to 20); `perception` 28 (+ the five of §10.8 and
+  `test_letter_gate_keeps_box_with_agents`; the sketch checks run on sketch6
+  too, with the gate fed ground-truth letter heat).
+
 ---
 
 ## 9. Sketch v5: rooms, close agents, multiple exits (spec, 15 Oct 2026; **built** 16 Oct, deviations in §8)
@@ -736,7 +873,7 @@ parsed and simulated as exits. Thin lines are not addressed.
 
 ---
 
-## 10. Sketch v6: recognise by pattern, not by line width (spec, 16 Oct 2026)
+## 10. Sketch v6: recognise by pattern, not by line width (spec, 16 Oct 2026; **built** 17 Oct, deviations in §8)
 
 **Why.** The v5 model on seven real drawings (`results/old_drawings_v5/`,
 `results/drawings_v5/`): every agent count and every real start right, but

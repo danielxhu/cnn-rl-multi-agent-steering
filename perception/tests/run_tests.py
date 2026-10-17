@@ -471,24 +471,27 @@ def test_multi_root_training_set():
 
 _SKETCHES = []
 _SKETCHES_BY_STYLE = {}
-SKETCH_STYLE_NAMES = ("sketch", "sketch2", "sketch3", "sketch4", "sketch5")
+SKETCH_STYLE_NAMES = ("sketch", "sketch2", "sketch3", "sketch4", "sketch5", "sketch6")
 
 
 def _sketch_scenes(cfg, style="sketch"):
     """One sketch scene per layout (2–8 agents), with the per-agent ring and
     tail maps the renderer drew; rendered once per style and cached across tests.
     v4 adds the free-form layouts; v5 adds the multi-box ones too, and packs
-    every second scene's start boxes (close agents)."""
+    every second scene's start boxes (close agents); v6 draws the same families
+    with the hard cases of mixed4."""
     cache = _SKETCHES if style == "sketch" else _SKETCHES_BY_STYLE.setdefault(style, [])
     if not cache:
-        from layouts import FREE_LAYOUTS, MULTI_LAYOUTS
+        from layouts import FREE_LAYOUTS, MIX_OPTIONS, MULTI_LAYOUTS
         from sketch import STYLES, sketch
         rng = np.random.default_rng(77)
-        extra = {"sketch4": FREE_LAYOUTS, "sketch5": FREE_LAYOUTS + MULTI_LAYOUTS * 2}.get(style, [])
+        extra = {"sketch4": FREE_LAYOUTS, "sketch5": FREE_LAYOUTS + MULTI_LAYOUTS * 2,
+                 "sketch6": FREE_LAYOUTS + MULTI_LAYOUTS * 2}.get(style, [])
         for k, layout in enumerate(LAYOUTS + extra):
             s = random_scene(rng, cfg, layout=layout, n_agents=int(rng.integers(2, 9)),
                              n_obstacles=int(rng.integers(1, 5)),
-                             close=style == "sketch5" and k % 2 == 0)
+                             close=style in ("sketch5", "sketch6") and k % 2 == 0,
+                             opts=MIX_OPTIONS["mixed4"] if style == "sketch6" else None)
             assert s is not None, f"{layout}: sampler gave up"
             s.seed = 9000 + k
             img, lab, drawn, parts = sketch(s, cfg, parts=True, style=STYLES[style])
@@ -608,14 +611,19 @@ def test_extract_on_sketch_labels():
     from runconfig import ExtractConfig
     cfg = Config()
     world = _world(cfg)
-    # v5: its own training targets and extractor (σ 0.5 x drawn radius, NMS 0.6, exits)
-    v5 = ExtractConfig(heat_nms_factor=0.6, goal_mode="exits")
+    from targets import letter_targets
+    # v5: its own training targets and extractor (σ 0.5 x drawn radius, NMS 0.6, exits);
+    # v6 adds the letter gate (fed the ground-truth letter heat) and min_box_side 3
+    own = {"sketch5": ExtractConfig(heat_nms_factor=0.6, goal_mode="exits"),
+           "sketch6": ExtractConfig(heat_nms_factor=0.6, goal_mode="exits", letter_gate=True,
+                                    min_box_side=3.0)}
     for size in (512, 256):
         for st in SKETCH_STYLE_NAMES:
             for drawn, lab, _ in _sketch_scenes(cfg, st):
-                heat, dirs, _ = instance_targets(drawn, world, size, 0.5 if st == "sketch5" else 1.0)
+                heat, dirs, _ = instance_targets(drawn, world, size, 0.5 if st in own else 1.0)
+                letter = letter_targets(drawn, world, size)[0] if st == "sketch6" else None
                 p = extract(_downsample(lab, size), world, heat=heat[0], dir=dirs,
-                            ecfg=v5 if st == "sketch5" else ExtractConfig())
+                            ecfg=own.get(st, ExtractConfig()), letter=letter)
                 tag = f"{st} {drawn.layout} @{size}"
                 assert p is not None, f"{tag}: parse failed"
                 pairs = _match(drawn, p, tol=1.0)
@@ -626,7 +634,7 @@ def test_extract_on_sketch_labels():
                     assert err < 10.0, f"{tag}: heading error {err:.1f}°"
                 assert len(p.scene.obstacles) == len(drawn.obstacles), \
                     f"{tag}: {len(p.scene.obstacles)} obstacles vs {len(drawn.obstacles)}"
-                if st == "sketch5":                    # every start and exit, as a set
+                if st in own:                          # every start and exit, as a set
                     from metrics import region_set_ok
                     assert region_set_ok(drawn, p.scene), f"{tag}: start / exit boxes not recovered"
 
@@ -820,6 +828,217 @@ def test_heat_nms_separates_touching():
         a.radius = cfg.agent_radius
     assert np.array_equal(h1, instance_targets(s, world, 256, 1.0)[0])
     assert instance_targets(s, world, 256, 0.5)[0].sum() < 0.3 * h1.sum()
+
+
+# ------------------------------------------------ sketch v6: letter head and gate
+
+def _two_box_scene(cfg):
+    """A start box with two agents and a goal box, rendered (no letters drawn)."""
+    s = Scene(walls=boundary_walls(cfg.world), agents=[Agent((15.0, 45.0), 0.0), Agent((15.0, 55.0), 0.3)],
+              start_region=Region(8, 40, 22, 60), goal_region=Region(78, 40, 92, 60),
+              groups=[(Region(8, 40, 22, 60), Region(78, 40, 92, 60))])
+    _, lab = render(s, cfg, fill_unreachable=False)
+    return s, lab
+
+
+def _letter_map(cfg, size, letters):
+    """(2, S, S) letter heat from [(kind, (x, y), height)] via the training targets."""
+    from targets import letter_targets
+    s = Scene(letters=[{"kind": k, "pos": list(p), "height": h} for k, p, h in letters])
+    return letter_targets(s, _world(cfg), size)[0]
+
+
+@test
+def test_letter_targets():
+    """Letter heat peaks of value 1 at the letter centres, in the letter's channel
+    (0 = S, 1 = G); a scene without letters gives zeros and mask 0, and its
+    letter loss is masked out (not trained towards "no letter")."""
+    import torch
+    from losses import masked_focal_heat
+    from targets import letter_targets
+    cfg = Config()
+    world = _world(cfg)
+    s = Scene(letters=[{"kind": "S", "pos": [20.0, 30.0], "height": 4.0},
+                       {"kind": "G", "pos": [70.5, 80.25], "height": 6.0}])
+    for size in (512, 256):
+        heat, mask = letter_targets(s, world, size)
+        assert heat.shape == (2, size, size) and mask == 1.0
+        for ch, L in ((0, s.letters[0]), (1, s.letters[1])):
+            cx, cy = world_to_px(cfg.world, size, *L["pos"])
+            assert heat[ch, int(round(cy)), int(round(cx))] == 1.0
+            assert heat[1 - ch, int(round(cy)), int(round(cx))] < 1e-3, "letter heat in the wrong channel"
+            peaks = np.argwhere(heat[ch] == heat[ch].max())
+            assert len(peaks) == 1
+        assert int((heat == 1.0).sum()) == 2
+    empty, m0 = letter_targets(Scene(), world, 256)
+    assert m0 == 0.0 and not empty.any()
+    pred = torch.full((2, 2, 16, 16), 0.3)
+    gt = torch.zeros((2, 2, 16, 16))
+    assert masked_focal_heat(pred, gt, torch.tensor([0.0, 0.0])) is None
+    gt[0, 0, 5, 5] = 1.0
+    a = masked_focal_heat(pred, gt, torch.tensor([1.0, 0.0]))
+    gt2 = gt.clone()
+    gt2[1, 1, 9, 9] = 1.0                                # a letter in the masked-out sample changes nothing
+    assert torch.allclose(a, masked_focal_heat(pred, gt2, torch.tensor([1.0, 0.0])))
+
+
+@test
+def test_init_adds_letter_head():
+    """--init from a checkpoint without a letter head: every tensor loads, the new
+    head keeps its initialisation (bias -2.19); any other mismatch still raises.
+    The letter head adds 50 parameters at unet24x4 and changes nothing else."""
+    import torch
+    from model import build_model, count_params, load_init_weights
+    from runconfig import ModelConfig
+    torch.manual_seed(0)
+    v5 = build_model(ModelConfig(arch="unet16x4", instance_head=True))
+    torch.manual_seed(0)
+    v6 = build_model(ModelConfig(arch="unet16x4", instance_head=True, letter_head=True))
+    for k, t in v5.state_dict().items():
+        assert torch.equal(t, v6.state_dict()[k]), f"{k}: the letter head changed another layer's init"
+    torch.manual_seed(1)
+    v5b = build_model(ModelConfig(arch="unet16x4", instance_head=True))
+    fresh = load_init_weights(v6, v5b.state_dict())
+    assert fresh == ["letter.weight", "letter.bias"]
+    assert all(torch.equal(t, v6.state_dict()[k]) for k, t in v5b.state_dict().items())
+    assert torch.allclose(v6.letter.bias, torch.full((2,), -2.19))
+    with torch.no_grad():
+        out = v6.eval()(torch.zeros(1, 3, 64, 64))
+    assert out["letter"].shape == (1, 2, 64, 64)
+    for bad in (build_model(ModelConfig(arch="unet24x4", instance_head=True)).state_dict(),   # arch
+                build_model(ModelConfig(arch="unet16x4")).state_dict()):                    # no inst head
+        try:
+            load_init_weights(build_model(ModelConfig(arch="unet16x4", instance_head=True, letter_head=True)), bad)
+        except RuntimeError:
+            continue
+        raise AssertionError("a mismatch other than the letter head must raise")
+    n24 = count_params(build_model(ModelConfig(arch="unet24x4", instance_head=True)))
+    assert count_params(build_model(ModelConfig(arch="unet24x4", instance_head=True, letter_head=True))) == n24 + 50
+
+
+@test
+def test_letter_gate():
+    """letter_gate: a box without letter heat is dropped; a box with G heat but the
+    start class becomes an exit; with the gate off the result is v5's. Rendered
+    sets switch the gate off in evaluate.py."""
+    import json
+    import tempfile
+    from pathlib import Path
+    from dataclasses import replace
+    from evaluate import set_ecfg
+    from runconfig import ExtractConfig
+    cfg = Config()
+    world = _world(cfg)
+    s, lab = _two_box_scene(cfg)
+    heat, dirs, _ = instance_targets(s, world, cfg.img_size)
+    base = ExtractConfig(goal_mode="exits")
+    gate = replace(base, letter_gate=True)
+    off = extract(lab, world, heat=heat[0], dir=dirs, ecfg=base)
+    # the start box carries a G, the goal box no letter at all
+    letter = _letter_map(cfg, cfg.img_size, [("G", (15.0, 50.0), 4.0)])
+    p = extract(lab, world, heat=heat[0], dir=dirs, ecfg=gate, letter=letter)
+    assert p is not None and p.diagnostics["dropped_no_letter"] == 1
+    assert len(p.scene.exits) == 1 and region_iou(p.scene.exits[0], s.start_region) > 0.9
+    assert p.scene.starts == [] and len(p.scene.agents) == 2
+    # with the right letters the gate changes nothing; off, the letter map is ignored
+    good = _letter_map(cfg, cfg.img_size, [("S", (15.0, 50.0), 4.0), ("G", (85.0, 50.0), 4.0)])
+    pg = extract(lab, world, heat=heat[0], dir=dirs, ecfg=gate, letter=good)
+    assert pg.scene.starts == off.scene.starts and pg.scene.exits == off.scene.exits
+    po = extract(lab, world, heat=heat[0], dir=dirs, ecfg=base, letter=letter)
+    assert parsed_to_json(po) == parsed_to_json(off), "gate off: the letter map must not matter"
+    try:
+        extract(lab, world, heat=heat[0], dir=dirs, ecfg=gate)
+        raise AssertionError("the gate without a letter map must raise")
+    except ValueError:
+        pass
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "dataset.json").write_text(json.dumps({"args": {"style": "render"}}))
+        assert set_ecfg(gate, Path(d), "t").letter_gate is False
+        (Path(d) / "dataset.json").write_text(json.dumps({"args": {"style": "sketch6"}}))
+        assert set_ecfg(gate, Path(d), "t").letter_gate is True
+
+
+@test
+def test_letter_gate_keeps_box_with_agents():
+    """Gate step (iii): a box with no letter heat that holds a parsed agent (an S
+    too small or faint to read) is kept as a start (kept_by_agents); a box with
+    neither letter nor agent is still dropped; a lettered box keeps its letter's kind."""
+    from dataclasses import replace
+    from runconfig import ExtractConfig
+    cfg = Config()
+    world = _world(cfg)
+    s, lab = _two_box_scene(cfg)
+    heat, dirs, _ = instance_targets(s, world, cfg.img_size)
+    gate = ExtractConfig(goal_mode="exits", letter_gate=True)
+    from extract import extract_boxes
+    none = np.zeros((2, cfg.img_size, cfg.img_size), np.float32)          # no letter read anywhere
+    diag = {}
+    starts, goals = extract_boxes(lab == C_START, lab == C_GOAL, cfg.scale, world, gate,
+                                  agent_pos=[a.pos for a in s.agents], letter=none, diag=diag)
+    assert diag["kept_by_agents"] == 1 and diag["dropped_no_letter"] == 1 and goals == []
+    assert len(starts) == 1 and region_iou(starts[0], s.start_region) > 0.9
+    # (no exit left: in exits mode that is a parse failure, as for any scene without one)
+    assert extract(lab, world, heat=heat[0], dir=dirs, ecfg=gate, letter=none) is None
+    # with a G in the goal box: one start kept by its agents, one exit by its letter
+    g_only = _letter_map(cfg, cfg.img_size, [("G", (85.0, 50.0), 4.0)])
+    q = extract(lab, world, heat=heat[0], dir=dirs, ecfg=gate, letter=g_only)
+    assert q.diagnostics["kept_by_agents"] == 1 and q.diagnostics["dropped_no_letter"] == 0
+    assert len(q.scene.starts) == 1 and len(q.scene.exits) == 1
+    assert region_iou(q.scene.exits[0], s.goal_region) > 0.9
+    # a letter beats the agents: a G in the box holding the agents makes it an exit (step ii first)
+    g_on_start = _letter_map(cfg, cfg.img_size, [("G", (15.0, 50.0), 4.0)])
+    r = extract(lab, world, heat=heat[0], dir=dirs, ecfg=replace(gate, letter_suppress_agents=False),
+                letter=g_on_start)
+    assert r.diagnostics["kept_by_agents"] == 0 and len(r.scene.exits) == 1 and r.scene.starts == []
+
+
+@test
+def test_agent_on_letter_suppressed():
+    """With the gate, an agent peak on a stronger letter peak is dropped (a letter
+    read as an agent); an agent 3 radii from a letter is kept."""
+    from extract import detect_agents_heat, suppress_agents_on_letters
+    from runconfig import ExtractConfig
+    cfg = Config()
+    world = _world(cfg)
+    size = 256
+    r = cfg.agent_radius
+    s = Scene(agents=[Agent((30.0, 50.0), 0.0), Agent((60.0, 50.0), 0.0)])
+    heat = instance_targets(s, world, size)[0][0] * 0.6           # agent peaks scoring 0.6
+    letter = _letter_map(cfg, size, [("S", (30.0, 50.0), 4.0), ("G", (60.0 + 3 * r, 50.0), 4.0)])
+    ecfg = ExtractConfig(letter_gate=True)
+    r_px = r * size / cfg.world
+    dets = detect_agents_heat(heat, r_px, ecfg)
+    assert len(dets) == 2
+    diag = {}
+    kept = suppress_agents_on_letters(dets, letter, r_px, ecfg, diag)
+    assert diag["agents_on_letters"] == 1 and len(kept) == 1
+    assert abs(kept[0][0] - world_to_px(cfg.world, size, 60.0, 50.0)[0]) < 1.0
+    # a weaker letter does not remove a confident agent
+    assert len(suppress_agents_on_letters(dets, letter * 0.5, r_px, replace_thresh(ecfg, 0.2), {})) == 2
+
+
+def replace_thresh(ecfg, t):
+    from dataclasses import replace
+    return replace(ecfg, letter_thresh=t)
+
+
+@test
+def test_min_box_side():
+    """A 2 x 10 box (a corner sliver) is dropped at min_box_side 3.0, kept at 0."""
+    from runconfig import ExtractConfig
+    cfg = Config()
+    world = _world(cfg)
+    sliver = Region(80, 10, 82, 20)
+    s = Scene(walls=boundary_walls(cfg.world), agents=[Agent((15.0, 50.0), 0.0)],
+              start_region=Region(8, 40, 22, 60), goal_region=Region(78, 40, 92, 60),
+              starts=[Region(8, 40, 22, 60)], exits=[Region(78, 40, 92, 60), sliver])
+    _, lab = render(s, cfg, fill_unreachable=False)
+    heat, dirs, _ = instance_targets(s, world, cfg.img_size)
+    keep = extract(lab, world, heat=heat[0], dir=dirs, ecfg=ExtractConfig(goal_mode="exits"))
+    assert len(keep.scene.exits) == 2 and "dropped_thin_boxes" not in keep.diagnostics
+    drop = extract(lab, world, heat=heat[0], dir=dirs, ecfg=ExtractConfig(goal_mode="exits", min_box_side=3.0))
+    assert len(drop.scene.exits) == 1 and drop.diagnostics["dropped_thin_boxes"] == 1
+    assert region_iou(drop.scene.exits[0], Region(78, 40, 92, 60)) > 0.9
 
 
 def main():

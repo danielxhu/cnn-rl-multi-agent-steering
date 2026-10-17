@@ -39,6 +39,22 @@ Invariants:
   behaviour.
 - Heat-mode peaks are suppressed within ``heat_nms_factor`` (default:
   ``nms_factor``) nominal radii; the ring vote always uses ``nms_factor``.
+- Sketch v6 (DESIGN_SKETCH §10.4), all off by default (v5 behaviour):
+  ``min_box_side`` drops boxes with a shorter side below it
+  (``diagnostics["dropped_thin_boxes"]``). ``letter_gate`` needs the letter
+  heat (``letter``, (2, S, S) S / G) and works in this order: (i) with
+  ``letter_suppress_agents`` an agent peak within 1.5 nominal radii of a
+  letter peak ≥ ``letter_thresh`` that scores higher than the agent is
+  dropped (``diagnostics["agents_on_letters"]``): a letter is not an agent;
+  boxes are then found on the union of both region classes and (ii) a box
+  whose max letter heat over both channels is ≥ ``letter_thresh`` takes the
+  stronger channel's kind, whatever the segmentation class or
+  ``region_by_agents`` say; (iii) a box without a letter that holds a parsed
+  agent (within one agent radius) is kept as a start
+  (``diagnostics["kept_by_agents"]``: an S too small or faint to read); (iv)
+  only a box with neither is dropped (``diagnostics["dropped_no_letter"]``).
+  Dropped boxes are simply gone (their pixels are not turned into walls;
+  walls come from the wall mask).
 """
 from __future__ import annotations
 
@@ -545,18 +561,130 @@ def _boxes_by_agents(start_mask, goal_mask, scale, world, ecfg, seal, agent_pos)
     return starts, goals
 
 
-def extract_boxes(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), agent_pos=None):
+def _box_slice(reg, world, S):
+    """The pixel window of a world-unit box (inclusive bounds) at resolution S."""
+    W = float(world["size"])
+    (c0, r0), (c1, r1) = world_to_px(W, S, reg.x0, reg.y1), world_to_px(W, S, reg.x1, reg.y0)
+    return (slice(max(0, int(r0)), int(math.ceil(r1)) + 1), slice(max(0, int(c0)), int(math.ceil(c1)) + 1))
+
+
+def _gate_by_letters(boxes, letter, world, ecfg, diag, agent_pos=None):
+    """(starts, goals): a box with letter heat ≥ letter_thresh takes the stronger
+    letter's kind; one without a letter but holding a parsed agent (within one
+    agent radius) is a start (kept_by_agents); the rest are dropped
+    (dropped_no_letter)."""
+    letter = np.asarray(letter, np.float32)
+    S = letter.shape[-1]
+    tol = float(world["agent_radius"])
+    starts, goals, dropped, by_agents = [], [], 0, 0
+    for reg in boxes:
+        sl = _box_slice(reg, world, S)
+        peak_s, peak_g = float(letter[0][sl].max(initial=0.0)), float(letter[1][sl].max(initial=0.0))
+        if max(peak_s, peak_g) >= ecfg.letter_thresh:
+            (starts if peak_s >= peak_g else goals).append(reg)
+        elif agent_pos and any(reg.distance_to(p) <= tol for p in agent_pos):
+            starts.append(reg)
+            by_agents += 1
+        else:
+            dropped += 1
+    diag["dropped_no_letter"] = dropped
+    diag["kept_by_agents"] = by_agents
+    return starts, goals
+
+
+def _merge_cut_boxes(boxes, agent_mask, world, max_gap):
+    """Rejoin a box cut in two by a row of agents drawn right across it: two pieces
+    whose bounding boxes overlap (drawn boxes never do), or that are lined up on
+    one axis (≥ 80 % shared extent), at most `max_gap` apart, with agent ink over
+    ≥ 30 % of the strip between them, become one box."""
+    S = agent_mask.shape[0]
+    boxes = list(boxes)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if min(a.x1, b.x1) > max(a.x0, b.x0) and min(a.y1, b.y1) > max(a.y0, b.y0):
+                    boxes[i] = Region(min(a.x0, b.x0), min(a.y0, b.y0), max(a.x1, b.x1), max(a.y1, b.y1))
+                    del boxes[j]
+                    merged = True
+                    break
+                for lo0, hi0, lo1, hi1, g0, g1 in ((a.x0, a.x1, b.x0, b.x1, a.y1, b.y0), (a.x0, a.x1, b.x0, b.x1, b.y1, a.y0),
+                                                  (a.y0, a.y1, b.y0, b.y1, a.x1, b.x0), (a.y0, a.y1, b.y0, b.y1, b.x1, a.x0)):
+                    shared = min(hi0, hi1) - max(lo0, lo1)
+                    if shared < 0.8 * min(hi0 - lo0, hi1 - lo1) or not (0.0 <= g1 - g0 <= max_gap):
+                        continue
+                    union = Region(min(a.x0, b.x0), min(a.y0, b.y0), max(a.x1, b.x1), max(a.y1, b.y1))
+                    vertical = (lo0, hi0) == (a.x0, a.x1)
+                    strip = Region(max(lo0, lo1), g0, min(hi0, hi1), g1) if vertical else \
+                        Region(g0, max(lo0, lo1), g1, min(hi0, hi1))
+                    sl = _box_slice(strip, world, S)
+                    cut = agent_mask[sl]
+                    if cut.size and cut.mean() >= 0.3:
+                        boxes[i] = union
+                        del boxes[j]
+                        merged = True
+                        break
+                if merged:
+                    break
+            if merged:
+                break
+    return boxes
+
+
+def extract_boxes(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), agent_pos=None,
+                  letter=None, diag=None, agent_mask=None):
     """(start boxes, goal boxes) in world units, unpaired.
 
     With ``ecfg.region_by_agents`` and agent positions (world units), boxes are
     found on the union of both classes and a box holding an agent is a start.
+    ``ecfg.min_box_side`` drops thin boxes; ``ecfg.letter_gate`` (with `letter`)
+    keeps only boxes with a letter and takes their kind from it (module doc).
+    Counts go to `diag` when given.
     """
+    diag = {} if diag is None else diag
     seal = pixel_geometry(world, start_mask.shape[0])["lw_px"]
+    if ecfg.letter_gate:
+        if letter is None:
+            raise ValueError("letter_gate needs the letter heat map: a model with a letter head")
+        boxes = [r for r, _ in _boxes(start_mask | goal_mask, scale, world, ecfg.min_region_area_px, seal)]
+        if agent_mask is not None:                    # a box cut by agents would lose its letter-less part
+            boxes = _merge_cut_boxes(boxes, agent_mask, world, 3.0 * float(world["agent_radius"]))
+        boxes = _drop_thin(boxes, ecfg, diag)
+        return _gate_by_letters(boxes, letter, world, ecfg, diag, agent_pos)
     if ecfg.region_by_agents and agent_pos is not None:
-        return _boxes_by_agents(start_mask, goal_mask, scale, world, ecfg, seal, agent_pos)
-    starts = [r for r, _ in _boxes(start_mask, scale, world, ecfg.min_region_area_px, seal)]
-    goals = [r for r, _ in _boxes(goal_mask, scale, world, ecfg.min_region_area_px, seal)]
+        starts, goals = _boxes_by_agents(start_mask, goal_mask, scale, world, ecfg, seal, agent_pos)
+    else:
+        starts = [r for r, _ in _boxes(start_mask, scale, world, ecfg.min_region_area_px, seal)]
+        goals = [r for r, _ in _boxes(goal_mask, scale, world, ecfg.min_region_area_px, seal)]
+    if ecfg.min_box_side > 0:
+        kept = _drop_thin(starts + goals, ecfg, diag)
+        starts, goals = [r for r in starts if r in kept], [r for r in goals if r in kept]
     return starts, goals
+
+
+def _drop_thin(boxes, ecfg, diag):
+    """Boxes whose shorter side is at least min_box_side (0: all); the rest counted."""
+    if ecfg.min_box_side <= 0:
+        return list(boxes)
+    kept = [r for r in boxes if min(r.width, r.height) >= ecfg.min_box_side]
+    diag["dropped_thin_boxes"] = diag.get("dropped_thin_boxes", 0) + len(boxes) - len(kept)
+    return kept
+
+
+def suppress_agents_on_letters(dets, letter, r_px, ecfg, diag) -> list:
+    """Drop agent peaks within 1.5 nominal radii of a stronger letter peak (≥ letter_thresh)."""
+    lmax = np.asarray(letter, np.float32).max(0)
+    letters = _peaks(lmax, ecfg.letter_thresh, r_px)
+    keep, dropped = [], 0
+    for cx, cy, sc in dets:
+        if any(math.hypot(cx - lx, cy - ly) <= 1.5 * r_px and ls > sc for lx, ly, ls in letters):
+            dropped += 1
+            continue
+        keep.append((cx, cy, sc))
+    diag["agents_on_letters"] = dropped
+    return keep
 
 
 def _drop_nested(starts, goals):
@@ -581,13 +709,15 @@ def _drop_nested(starts, goals):
     return keep_s, keep_g, len(allb) - len(keep_s) - len(keep_g)
 
 
-def extract_regions(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), agent_pos=None):
+def extract_regions(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), agent_pos=None,
+                    letter=None, diag=None, agent_mask=None):
     """[(start, goal)] pairs sorted by start (x0, y0); plus the number of unpaired regions.
 
     With ``ecfg.region_by_agents`` and agent positions (world units), boxes are
     found on the union of both classes and a box holding an agent is a start.
     """
-    starts, goals = extract_boxes(start_mask, goal_mask, scale, world, ecfg, agent_pos)
+    starts, goals = extract_boxes(start_mask, goal_mask, scale, world, ecfg, agent_pos, letter, diag,
+                                  agent_mask)
     pairs = []
     if len(starts) == 1 and len(goals) == 1:
         pairs = [(starts[0], goals[0])]
@@ -608,7 +738,8 @@ def extract_regions(start_mask, goal_mask, scale, world, ecfg=ExtractConfig(), a
 
 # ----------------------------------------------------------------- driver
 
-def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
+def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig(), letter=None):
+    """Parse a label map (+ heat / dir, + letter heat (2, S, S) for the letter gate)."""
     labels = np.asarray(labels)
     S = labels.shape[0]
     geo = pixel_geometry(world, S)
@@ -632,6 +763,8 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
             dets = detect_agents_ring(agent_mask, r_px, lw_px, ecfg)
     else:
         dets = detect_agents_ring(agent_mask, r_px, lw_px, ecfg)
+    if ecfg.letter_gate and ecfg.letter_suppress_agents and letter is not None and dets:
+        dets = suppress_agents_on_letters(dets, letter, r_px, ecfg, diag)
     if not dets:
         return None
     centers = [(cx, cy) for cx, cy, _ in dets]
@@ -648,7 +781,8 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
     # --- regions (after agents: with region_by_agents a box holding one is a start)
     agent_pos = [px_to_world(W, S, cx, cy) for cx, cy in centers]
     if ecfg.goal_mode == "exits":
-        boxes, goals = extract_boxes(labels == C_START, labels == C_GOAL, scale, world, ecfg, agent_pos)
+        boxes, goals = extract_boxes(labels == C_START, labels == C_GOAL, scale, world, ecfg, agent_pos,
+                                     letter, diag, agent_mask)
         boxes, goals, diag["dropped_nested_boxes"] = _drop_nested(boxes, goals)
         # an agent may be drawn on its box's edge: within one agent radius counts
         tol = float(world["agent_radius"])
@@ -660,7 +794,7 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig()):
         goals.sort(key=lambda r: (r.x0, r.y0))
     elif ecfg.goal_mode == "pairs":
         pairs, unpaired = extract_regions(labels == C_START, labels == C_GOAL, scale, world, ecfg,
-                                          agent_pos)
+                                          agent_pos, letter, diag, agent_mask)
         diag["unpaired_regions"] = unpaired
         if not pairs:
             return None

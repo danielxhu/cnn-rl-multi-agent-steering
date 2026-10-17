@@ -43,6 +43,36 @@ def px_to_world(world_size: float, size: int, px, py):
     return px / scale, world_size - py / scale
 
 
+def letter_targets(scene, world: dict, size: int):
+    """(heat (2,S,S) float32, mask float32 scalar): S / G letter heat (sketch v6,
+    DESIGN_SKETCH §10.3). Per letter a Gaussian at its centre with σ = 0.3 ×
+    its height (px), the pixel nearest the centre exactly 1, in channel 0 (S) or
+    1 (G). A scene without ``letters`` gets an all-zero map and mask 0: its
+    letter loss is masked out, not trained towards "no letter"."""
+    heat = np.zeros((2, size, size), np.float32)
+    letters = getattr(scene, "letters", None)
+    if letters is None:
+        return heat, np.float32(0.0)
+    W = float(world["size"])
+    scale = size / W
+    for L in letters:
+        ch = 0 if L["kind"] == "S" else 1
+        cx, cy = world_to_px(W, size, L["pos"][0], L["pos"][1])
+        sigma = max(0.3 * float(L["height"]) * scale, 0.5)
+        reach = int(math.ceil(4.0 * sigma)) + 1
+        x0, x1 = max(0, int(cx) - reach), min(size, int(cx) + reach + 1)
+        y0, y1 = max(0, int(cy) - reach), min(size, int(cy) + reach + 1)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        g = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sigma * sigma)).astype(np.float32)
+        heat[ch, y0:y1, x0:x1] = np.maximum(heat[ch, y0:y1, x0:x1], g)
+        ic, jc = int(round(cy)), int(round(cx))
+        if 0 <= ic < size and 0 <= jc < size:
+            heat[ch, ic, jc] = 1.0
+    return heat, np.float32(1.0)
+
+
 def instance_targets(scene, world: dict, size: int, heat_sigma: float = 1.0):
     """(heat (1,S,S), dir (2,S,S), mask (1,S,S)) float32 at resolution `size`.
 

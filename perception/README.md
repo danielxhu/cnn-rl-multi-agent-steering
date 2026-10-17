@@ -97,7 +97,8 @@ sim = Simulator(parsed.scene, sim_config(Config()))
 | `unet24x5` | 24 | 5 | 4.37 M | twice the receptive field, for 512 |
 | `unet16x4` | 16 | 4 | 0.48 M | smoke runs |
 
-Every model outputs 6-class logits. `--instance-head` adds three channels
+Every model outputs 6-class logits. `--letter-head` (sketch v6) adds two
+channels, S and G letter heat (+50 parameters). `--instance-head` adds three channels
 (agent-centre heatmap, cos θ, sin θ) on the same features (+75 parameters);
 with it the extractor reads agent poses from the heatmap instead of the
 label map. Losses: class-weighted cross-entropy (+ optional Dice), CenterNet
@@ -247,6 +248,33 @@ python predict.py --ckpt runs/sketch_s256_inst_s0/ckpt_best.pt --image IMG_0042.
   simulator by reaching any exit. `--tune-extract` then grids the heat threshold
   with the NMS factor; pass the result to `evaluate.py` / `predict.py` with
   `--heat-thresh` / `--heat-nms-factor`.
+- **Style v6** (`--style sketch6`, sets `*_sketch6` and the probe
+  `test_sketch6swap` on `--layout mixed4`, DESIGN_SKETCH §10) takes the
+  information out of line width: every line (wall, box side, agent, obstacle
+  outline) is drawn from one width law, so the model has to tell a box from a
+  wall by its pattern — a closed rectangle with a letter in it. `mixed4` adds
+  the hard cases: boxes 6 units narrow, boxes almost touching walls, room
+  corners left open or crossed, and slits (two parallel walls, a box without a
+  letter). The JSON records every box's letter (`"letters"`), and a **letter
+  head** (`--letter-head`, + 50 parameters) learns S / G letter heat from it
+  (`--lambda-letter`, default 0.3; sets without letters add no letter loss).
+  Letters are at least 2.5 units tall and no stroke is wider than 12 px at 512.
+  With `--letter-gate` the extractor drops agent peaks sitting on a stronger
+  letter peak, gives a box with letter heat ≥ `--letter-thresh` its letter's
+  kind (start / exit), keeps a box without a letter as a start if it holds an
+  agent, and drops only boxes with neither.
+  `--min-box-side 3` drops slivers. `--no-letter-gate` switches the gate off;
+  `evaluate.py` switches it off by itself on rendered sets (no letters drawn).
+  `train.py --init` from a model without a letter head (v5) loads everything
+  else and starts the new head fresh.
+- **One command per version.** `python scripts/run_v6.py` (and `run_v5.py`
+  before it) runs datasets → training → `--tune-extract` → evaluations →
+  `aggregate.py` → the real drawings → `git push`, each step skipped when its
+  output exists, so it resumes after a stop; `--dry-run` prints the commands,
+  `--no-push` skips git. `python scripts/test_drawings.py` puts new photos in
+  `results/drawings_v5/input` through the newest run (v6 once it exists, else
+  v5) and pushes the parses; with v6, `compare_<name>.png` is photo | v5 clean |
+  v6 overlay | v6 clean.
 - Look at a few generated scenes before a long run:
   `python ../sim/generate.py --n 7 --style sketch --preview 7 --out data/preview_sketch`.
 
@@ -262,7 +290,8 @@ python predict.py --ckpt runs/sketch_s256_inst_s0/ckpt_best.pt --image IMG_0042.
 | faster epochs at 128 / 256 | `--cache ram` (decodes once; workers drop to 0) |
 | train on some layouts | `--layouts corridor doorway` |
 | continue an interrupted run | `train.py ... --resume` (same `--out`) |
-| tune extraction thresholds | `evaluate.py --ckpt ... --data data/val --tune-extract` |
+| tune extraction thresholds | `evaluate.py --ckpt ... --data data/val --tune-extract` (a letter-head run with the gate also tunes `letter_thresh`) |
+| letter gate on / off at test time | `evaluate.py` / `predict.py` `--letter-gate`, `--no-letter-gate`, `--letter-thresh 0.3`, `--min-box-side 3` |
 | a subset of the sweep | `sweep.py --only "s128_*"` |
 | a smoke dataset | `scripts/make_datasets.py --n-scale 0.01` |
 | run on CPU only | `--device cpu` |
