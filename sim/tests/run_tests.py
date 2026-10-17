@@ -265,8 +265,8 @@ def test_sketch_is_deterministic():
 
     # the widened style (v2) is deterministic too, and its digital medium has no camera
     from dataclasses import replace
-    from sketch import SKETCH_V2, SKETCH_V3, SKETCH_V4, SKETCH_V5
-    for st in (SKETCH_V2, SKETCH_V3, SKETCH_V4, SKETCH_V5):
+    from sketch import SKETCH_V2, SKETCH_V3, SKETCH_V4, SKETCH_V5, SKETCH_V6, SKETCH_V6_SWAP
+    for st in (SKETCH_V2, SKETCH_V3, SKETCH_V4, SKETCH_V5, SKETCH_V6, SKETCH_V6_SWAP):
         a = sketch(s, cfg, style=st)
         b = sketch(s, cfg, style=st)
         assert np.array_equal(np.asarray(a[0]), np.asarray(b[0])) and np.array_equal(a[1], b[1])
@@ -329,10 +329,13 @@ HASH_SETS = {
     "sketch2": ["--n", "14", "--style", "sketch2", "--layout", "mixed", "--seed", "5"] + _COMMON,
     "sketch3": ["--n", "14", "--style", "sketch3", "--layout", "mixed", "--seed", "5"] + _COMMON,
     "sketch4": ["--n", "14", "--style", "sketch4", "--layout", "mixed2", "--seed", "5"] + _COMMON,
-    # the default renderer: every family, mixed2, and hard / augmented scenes
+    # (DESIGN_SKETCH §10.8) v5 on its dataset layout, recorded before sketch v6
+    "sketch5": ["--n", "18", "--style", "sketch5", "--layout", "mixed3", "--seed", "5"] + _COMMON,
+    # the default renderer: every family, mixed2 / mixed3, and hard / augmented scenes
     **{"render_" + name: ["--n", "4", "--layout", name, "--seed", "7"] + _COMMON
-       for name in LAYOUTS + ["walls", "rooms"]},
+       for name in LAYOUTS + ["walls", "rooms", "boxrooms", "walls_multi", "rooms_multi"]},
     "render_mixed2": ["--n", "14", "--layout", "mixed2", "--seed", "340"] + _COMMON,
+    "render_mixed3": ["--n", "18", "--layout", "mixed3", "--seed", "350"] + _COMMON,
     "render_mixed_hard_aug3": ["--n", "14", "--layout", "mixed", "--agents", "4-8", "--obstacles", "0-6",
                                "--hard-ratio", "0.5", "--jitter-color", "45", "--jitter-line-width", "1.5",
                                "--jitter-background", "35", "--noise-std", "12", "--blur-sigma", "1.5",
@@ -520,6 +523,133 @@ def test_close_agents_and_sketch5_json():
     import cv2
     n_lab, _ = cv2.connectedComponents((lab == C_START).astype(np.uint8))
     assert n_lab - 1 >= len(m.starts), "every start box is drawn"
+
+
+# ------------------------------------------- sketch v6: width law, hard cases
+
+def _mixed4_scenes(n, seed, need_walls=False):
+    """n validated mixed4 scenes (with the hard cases), and their hard-case counts."""
+    from layouts import MIX_OPTIONS, MIXES
+    cfg = Config()
+    rng = np.random.default_rng(seed)
+    lay = MIXES["mixed4"]
+    out, i = [], 0
+    while len(out) < n:
+        info = {}
+        s = random_scene(rng, cfg, lay[i % len(lay)], int(rng.integers(1, 9)), int(rng.integers(0, 7)),
+                         opts=MIX_OPTIONS["mixed4"], info=info)
+        i += 1
+        if s is None or (need_walls and len(s.walls) <= 4):
+            continue
+        s.seed = 1000 + len(out)
+        out.append((s, dict(info)))
+    return out
+
+
+@test
+def test_sketch6_width_law():
+    """Line width carries no information in v6: over 50 scenes the mean drawn wall
+    width is the mean box side width (ratio 0.8-1.25); v5 drew walls ~2.5x wider;
+    the sketch6swap probe reverses it (< 0.6)."""
+    from sketch import STYLES, perturb
+    cfg = Config()
+    scenes = _mixed4_scenes(50, 42, need_walls=True)
+    ratio = {}
+    for name in ("sketch5", "sketch6", "sketch6swap"):
+        walls, boxes = [], []
+        for s, _ in scenes:
+            d = perturb(s, cfg, np.random.default_rng(s.seed), STYLES[name])
+            walls += [float(st.widths.mean()) for st, _ in d.walls]
+            boxes += [float(np.mean([sd.widths.mean() for sd in r.sides])) for r in d.regions]
+        ratio[name] = np.mean(walls) / np.mean(boxes)
+    assert 0.8 <= ratio["sketch6"] <= 1.25, ratio
+    assert ratio["sketch6swap"] < 0.6, ratio
+    assert ratio["sketch5"] > 1.8, ratio
+    # v6: no stroke wider than 12 px at 512 (a thick marker gone over twice), and
+    # every letter at least 2.5 world units tall, at 512 and 256
+    for name in ("sketch6", "sketch6swap"):
+        for size in (512, 256):
+            c = cfg.merged(img_size=size)
+            for s, _ in scenes[:15]:
+                d = perturb(s, c, np.random.default_rng(s.seed), STYLES[name])
+                strokes = ([w for w, _ in d.walls] + [sd for r in d.regions for sd in r.sides]
+                           + [o.outline for o in d.obstacles] + [a.ring for a in d.agents]
+                           + [a.tail for a in d.agents] + d.hatch)
+                assert max(float(st.widths.max()) for st in strokes) <= 12.0 * size / 512 + 1e-9, name
+                for r in d.regions:
+                    assert r.letter_h >= 2.5 * c.scale - 1e-9, f"{name} @{size}: letter {r.letter_h / c.scale:.2f}"
+                    short = float(min(np.ptp(r.quad[:, 0]), np.ptp(r.quad[:, 1])))
+                    assert r.letter_h <= STYLES[name].letter_height_frac * short + 1e-6, "letter larger than its box"
+    # the floor and the cap leave v5 alone
+    d5 = perturb(scenes[0][0], cfg, np.random.default_rng(scenes[0][0].seed), STYLES["sketch5"])
+    assert STYLES["sketch5"].letter_min_world == 0 and STYLES["sketch5"].stroke_cap_px is None and d5.regions
+
+
+@test
+def test_mixed4_hard_cases():
+    """mixed4: boxes with a short side under 10, boxes within 2 units of a wall's
+    surface, open / crossed corners and slits all occur; every agent sits in a
+    start box, keeps the simulator's spacing and wall clearance, and can reach
+    an exit; the older mixes are untouched (no options)."""
+    from layouts import MIX_OPTIONS, MIXES, LayoutOptions
+    from reachability import clearance, occupancy
+    from scene import members
+    cfg = Config()
+    assert MIXES["mixed4"] == MIXES["mixed3"] and LayoutOptions() == LayoutOptions(10.0, 0.0, 0.0, 0.0)
+    assert set(MIX_OPTIONS) == {"mixed4"}
+    small = near = 0
+    seen = {"corners_open": 0, "corners_crossed": 0, "slit": 0, "near_wall": 0}
+    for s, info in _mixed4_scenes(40, 7):
+        for k in seen:
+            seen[k] += info.get(k, 0)
+        assert is_solvable(cfg, s), f"{s.layout}: an agent cannot reach an exit"
+        clear = clearance(cfg, occupancy(cfg, s))
+        boxes = s.start_boxes() + s.exit_boxes()
+        for b in boxes:
+            small += min(b.width, b.height) < 10.0
+            gap = min(min(_seg_box_gap(w, b) for w in s.walls), b.x0, b.y0, cfg.world - b.x1, cfg.world - b.y1)
+            near += gap - cfg.wall_half <= 2.0
+            assert gap - cfg.wall_half > 0.25, f"{s.layout}: a wall runs into a box"
+        for i, a in enumerate(s.agents):
+            assert any(b.contains(a.pos) for b in s.start_boxes()), f"{s.layout}: agent outside the start boxes"
+            iy, ix = int(a.pos[1] / cfg.cell), int(a.pos[0] / cfg.cell)
+            assert clear[iy, ix] >= cfg.agent_radius, f"{s.layout}: agent inside the wall clearance"
+            for b_ in s.agents[i + 1:]:
+                assert math.dist(a.pos, b_.pos) >= 2 * cfg.agent_radius
+            assert members(s.goal_for(a))
+    assert small >= 5 and near >= 5, (small, near)
+    assert all(v >= 2 for v in seen.values()), seen
+
+
+def _seg_box_gap(seg, box, step=0.25) -> float:
+    """Distance from a wall centre line to a box (0 when it crosses it)."""
+    (ax, ay), (bx, by) = seg
+    n = max(2, int(math.hypot(bx - ax, by - ay) / step))
+    return min(box.distance_to((ax + (bx - ax) * t, ay + (by - ay) * t)) for t in np.linspace(0, 1, n))
+
+
+@test
+def test_sketch6_letters_json():
+    """sketch6 writes one letter per drawn box: inside the box, of its kind
+    (S in starts, G in exits), with a positive height; v5 writes none."""
+    from sketch import SKETCH_V5, SKETCH_V6, sketch
+    cfg = Config()
+    n = 0
+    for s, _ in _mixed4_scenes(12, 3):
+        _, _, drawn = sketch(s, cfg, style=SKETCH_V6)
+        boxes = [("S", b) for b in drawn.start_boxes()] + [("G", b) for b in drawn.exit_boxes()]
+        assert len(drawn.letters) == len(boxes), f"{s.layout}: {len(drawn.letters)} letters for {len(boxes)} boxes"
+        for kind, b in boxes:
+            hits = [L for L in drawn.letters if b.contains(tuple(L["pos"]))]
+            assert len(hits) == 1 and hits[0]["kind"] == kind, f"{s.layout}: letter of a {kind} box"
+            # >= 2.5 as drawn; the photo perspective changes the scale by a few percent
+            assert 2.3 <= hits[0]["height"] <= min(b.width, b.height), hits[0]["height"]
+            n += 1
+        back = Scene.from_dict(json.loads(json.dumps(drawn.as_dict(cfg, "t"))))
+        assert back.letters == drawn.letters
+    assert n >= 20
+    s, _ = _mixed4_scenes(1, 4)[0]
+    assert "letters" not in sketch(s, cfg, style=SKETCH_V5)[2].as_dict(cfg)
 
 
 def main():

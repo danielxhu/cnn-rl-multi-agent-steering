@@ -51,6 +51,7 @@ class ModelConfig:
     arch: str = "unet24x4"
     instance_head: bool = False
     n_classes: int = 6
+    letter_head: bool = False              # S / G letter heat (sketch v6, DESIGN_SKETCH §10.3)
 
 
 @dataclass
@@ -72,6 +73,7 @@ class TrainConfig:
     # heat peak sigma, x the agent's drawn radius (JSON "radius", sketch v5) or else
     # the nominal radius; 1.0 = the E5 / v4 targets (DESIGN_SKETCH §9.2)
     heat_sigma: float = 1.0
+    lambda_letter: float = 0.3             # letter heat loss weight (letter head only): starts near the heat term
 
 
 @dataclass
@@ -99,6 +101,11 @@ class ExtractConfig:
     # "pairs": start-goal boxes paired one-to-one (E5 / v4); "exits": every goal box is
     # an exit any agent may use, start boxes without a parsed agent are dropped (§9.3)
     goal_mode: str = "pairs"
+    # sketch v6 (DESIGN_SKETCH §10.4); the defaults are the v5 behaviour
+    letter_gate: bool = False              # a box needs letter heat; its kind is the stronger letter
+    letter_thresh: float = 0.3
+    letter_suppress_agents: bool = True    # (with letter_gate) an agent peak on a stronger letter dropped
+    min_box_side: float = 0.0              # boxes with a shorter side (world units) dropped; 0 = off
 
 
 @dataclass
@@ -208,6 +215,20 @@ def git_hash() -> str | None:
         return None
 
 
+def add_letter_flags(g):
+    """--letter-gate / --no-letter-gate / --letter-thresh / --min-box-side (train, evaluate,
+    predict; sketch v6). Unset flags (None) keep the run's own values."""
+    g.add_argument("--letter-gate", dest="letter_gate", action="store_const", const=True, default=None,
+                   help="a box is kept only with letter heat inside; its kind is the stronger letter "
+                        "(needs a letter head)")
+    g.add_argument("--no-letter-gate", dest="letter_gate", action="store_const", const=False,
+                   help="switch the letter gate off")
+    g.add_argument("--letter-thresh", dest="letter_thresh", type=float, default=None,
+                   help="letter heat a box needs (default 0.3)")
+    g.add_argument("--min-box-side", dest="min_box_side", type=float, default=None,
+                   help="drop boxes with a shorter side, world units (v6: 3.0; 0 = off)")
+
+
 def build_parser(description="Train one perception run.") -> argparse.ArgumentParser:
     """Flags for every RunConfig field. Defaults are None so unset flags keep the config."""
     p = argparse.ArgumentParser(description=description,
@@ -230,6 +251,8 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
     g.add_argument("--arch", default=None)
     g.add_argument("--instance-head", dest="instance_head", action="store_const", const=True,
                    default=None, help="add the heat + heading head (variant B)")
+    g.add_argument("--letter-head", dest="letter_head", action="store_const", const=True,
+                   default=None, help="add the S / G letter heat head (sketch v6; JSON 'letters')")
 
     g = p.add_argument_group("train")
     g.add_argument("--epochs", type=int, default=None)
@@ -249,6 +272,8 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
     g.add_argument("--init", default=None,
                    help="start from the model weights of this checkpoint (same arch), with a "
                         "fresh optimiser and schedule: fine-tuning on new data")
+    g.add_argument("--lambda-letter", dest="lambda_letter", type=float, default=None,
+                   help="letter heat loss weight, default 0.3 (scenes without letters contribute none)")
     g.add_argument("--heat-sigma", dest="heat_sigma", type=float, default=None,
                    help="heat target sigma x the drawn agent radius (JSON 'radius'), else x the "
                         "nominal radius; 1.0 = E5 / v4, sketch v5 trains with 0.5")
@@ -271,4 +296,5 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
     g.add_argument("--goal-mode", dest="goal_mode", choices=["pairs", "exits"], default=None,
                    help="pairs: start-goal boxes paired (E5); exits: every goal box is an exit, "
                         "agents may use any, empty start boxes dropped (sketch v5)")
+    add_letter_flags(g)
     return p

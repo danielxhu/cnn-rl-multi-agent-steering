@@ -35,7 +35,7 @@ from torch.utils.data import ConcatDataset, DataLoader, Dataset
 import _paths  # noqa: F401
 from config import N_CLASSES, Config
 from scene import Scene
-from targets import instance_targets
+from targets import instance_targets, letter_targets
 
 MIN_SCENES_TO_CACHE = 100                      # class_freq.json is only worth writing for real sets
 
@@ -113,11 +113,12 @@ def scene_files(root: Path) -> list:
 
 class SceneDataset(Dataset):
     def __init__(self, root, size, instance_targets=False, layouts=None, limit=None,
-                 cache=False, heat_sigma=1.0):
+                 cache=False, heat_sigma=1.0, letter_targets=False):
         self.root = Path(root)
         self.size = int(size)
         self.instance_targets = bool(instance_targets)
         self.heat_sigma = float(heat_sigma)         # heat peak sigma, x drawn / nominal radius
+        self.letter_targets = bool(letter_targets)  # S / G letter heat + per-sample mask (v6)
         self.cache = bool(cache)
         if not self.root.is_dir():
             raise FileNotFoundError(f"dataset directory not found: {self.root}")
@@ -194,6 +195,10 @@ class SceneDataset(Dataset):
             out["heat"] = torch.from_numpy(heat)
             out["dir"] = torch.from_numpy(dirs)
             out["dir_mask"] = torch.from_numpy(mask)
+        if self.letter_targets:
+            lh, lm = letter_targets(self.scenes[i], self.worlds[i], self.size)
+            out["letter"] = torch.from_numpy(lh)
+            out["letter_mask"] = torch.tensor(float(lm))
         return out
 
     def sim_config(self) -> Config:

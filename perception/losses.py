@@ -8,6 +8,9 @@
   pixels and divided by the number of positives (agent centres).
 - ``L_dir``: L1 between the predicted unit vector and ``(cos θ, sin θ)``
   inside ``dir_mask``, averaged over masked pixels.
+- ``L_letter`` (sketch v6, weight ``lambda_letter``): the heat focal loss on
+  both letter channels, only over samples whose scene records letters
+  (``letter_mask``), divided by the number of letters among them.
 
 ``total_loss`` reads ``heat``/``dir`` from the model output and the batch only
 when both are present, so the same function serves both variants.
@@ -50,20 +53,34 @@ def focal_heat(pred, gt, alpha=2.0, beta=4.0) -> torch.Tensor:
     return -(pos_loss.sum() + neg_loss.sum()) / torch.clamp(n_pos, min=1.0)
 
 
+def masked_focal_heat(pred, gt, mask, alpha=2.0, beta=4.0):
+    """`focal_heat` over the samples with mask 1 only, or None when there is none:
+    a scene without letters says nothing about letters (not "no letter here")."""
+    m = mask.reshape(-1, *([1] * (pred.dim() - 1))).to(pred.dtype)
+    if float(m.sum()) == 0:
+        return None
+    pred = pred.clamp(1e-4, 1 - 1e-4)
+    pos = (gt >= 1.0).to(pred.dtype) * m
+    neg = (1.0 - (gt >= 1.0).to(pred.dtype)) * m
+    pos_loss = torch.log(pred) * (1 - pred) ** alpha * pos
+    neg_loss = torch.log(1 - pred) * pred ** alpha * (1 - gt) ** beta * neg
+    return -(pos_loss.sum() + neg_loss.sum()) / torch.clamp(pos.sum(), min=1.0)
+
+
 def masked_dir_l1(pred, gt, mask) -> torch.Tensor:
     diff = (pred - gt).abs() * mask
     return diff.sum() / torch.clamp(mask.sum() * 2, min=1.0)
 
 
 def total_loss(out: dict, batch: dict, class_weights, tcfg):
-    """Return (loss, {"seg": float, "heat": float, "dir": float}); missing parts are 0."""
+    """Return (loss, {"seg", "heat", "dir", "letter": float}); missing parts are 0."""
     logits, target = out["seg"], batch["labels"]
     w = class_weights.to(logits.device) if class_weights is not None else None
     seg = F.cross_entropy(logits, target, weight=w)
     if tcfg.dice > 0:
         seg = seg + tcfg.dice * soft_dice(logits, target, logits.shape[1])
     loss = seg
-    parts = {"seg": float(seg.detach()), "heat": 0.0, "dir": 0.0}
+    parts = {"seg": float(seg.detach()), "heat": 0.0, "dir": 0.0, "letter": 0.0}
     if "heat" in out and "heat" in batch:
         lh = focal_heat(out["heat"], batch["heat"])
         loss = loss + tcfg.lambda_heat * lh
@@ -72,4 +89,9 @@ def total_loss(out: dict, batch: dict, class_weights, tcfg):
         ld = masked_dir_l1(out["dir"], batch["dir"], batch["dir_mask"])
         loss = loss + tcfg.lambda_dir * ld
         parts["dir"] = float(ld.detach())
+    if "letter" in out and "letter" in batch:
+        ll = masked_focal_heat(out["letter"], batch["letter"], batch["letter_mask"])
+        if ll is not None:
+            loss = loss + getattr(tcfg, "lambda_letter", 0.3) * ll
+            parts["letter"] = float(ll.detach())
     return loss, parts

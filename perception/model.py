@@ -10,6 +10,8 @@ Heads on the final (B, base_ch, S, S) features:
     seg  : 1×1 conv → (B, 6, S, S) logits, always present
     inst : 1×1 conv → (B, 3, S, S) = [heat, cos, sin], optional;
            heat → sigmoid, (cos, sin) → L2-normalised
+    letter: 1×1 conv → (B, 2, S, S) sigmoid = S / G letter heat, optional
+            (sketch v6, DESIGN_SKETCH §10.3; + 50 parameters at unet24)
 
 ``forward`` returns a dict so the training loop and the extractor are
 indifferent to the variant.  Parameter counts (DESIGN.md §3.1):
@@ -38,12 +40,13 @@ def _block(i: int, o: int) -> nn.Sequential:
 
 
 class UNet(nn.Module):
-    def __init__(self, base_ch=24, levels=4, n_classes=6, instance_head=False):
+    def __init__(self, base_ch=24, levels=4, n_classes=6, instance_head=False, letter_head=False):
         super().__init__()
         if levels < 2:
             raise ValueError("a U-Net needs at least two levels")
         self.base_ch, self.levels = int(base_ch), int(levels)
         self.n_classes, self.instance_head = int(n_classes), bool(instance_head)
+        self.letter_head = bool(letter_head)
         widths = [base_ch * 2 ** k for k in range(levels)]
 
         self.enc = nn.ModuleList()
@@ -63,6 +66,11 @@ class UNet(nn.Module):
             # CenterNet prior: start the heat map near 0.1 so the focal loss is not
             # dominated by 99 % negative pixels at initialisation.
             nn.init.constant_(self.inst.bias[0:1], -2.19)
+        # created last, so the random initialisation of every other layer (and
+        # therefore every model without it) is unchanged by its existence
+        self.letter = nn.Conv2d(widths[0], 2, 1) if letter_head else None
+        if self.letter is not None:
+            nn.init.constant_(self.letter.bias, -2.19)
 
     @property
     def divisor(self) -> int:
@@ -82,13 +90,30 @@ class UNet(nn.Module):
             h = self.inst(x)
             out["heat"] = torch.sigmoid(h[:, 0:1])
             out["dir"] = F.normalize(h[:, 1:3], dim=1, eps=1e-6)
+        if self.letter is not None:
+            out["letter"] = torch.sigmoid(self.letter(x))
         return out
 
 
 def build_model(mcfg) -> UNet:
     if mcfg.arch not in ARCHS:
         raise ValueError(f"unknown arch {mcfg.arch!r}; choose from {sorted(ARCHS)}")
-    return UNet(n_classes=mcfg.n_classes, instance_head=mcfg.instance_head, **ARCHS[mcfg.arch])
+    return UNet(n_classes=mcfg.n_classes, instance_head=mcfg.instance_head,
+                letter_head=getattr(mcfg, "letter_head", False), **ARCHS[mcfg.arch])
+
+
+def load_init_weights(model: nn.Module, state: dict) -> list:
+    """Load a checkpoint's weights for fine-tuning (``--init``). The only mismatch
+    tolerated is a letter head the checkpoint lacks (DESIGN_SKETCH §10.3): it keeps
+    its initialisation. Anything else missing, unexpected or of another shape
+    raises. Returns the names left at their initialisation."""
+    own = model.state_dict()
+    missing = [k for k in own if k not in state]
+    unexpected = [k for k in state if k not in own]
+    if unexpected or any(not k.startswith("letter.") for k in missing):
+        raise RuntimeError(f"checkpoint does not fit the model: missing {missing}, unexpected {unexpected}")
+    model.load_state_dict(state, strict=not missing)   # a shape mismatch raises either way
+    return missing
 
 
 def count_params(m: nn.Module) -> int:

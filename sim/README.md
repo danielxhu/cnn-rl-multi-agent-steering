@@ -70,7 +70,9 @@ drawn; it follows from the agent pose and the constants in `dataset.json`.
   every start box and every exit box; `groups` is then empty and
   `start_region` / `goal_region` are the first of each. An agent without its
   own `goal_region` succeeds by reaching **any** exit.
-- `radius` on an agent (only `--style sketch5`): the radius it was drawn with.
+- `radius` on an agent (`--style sketch5` / `sketch6`): the radius it was drawn with.
+- `letters` (only `--style sketch6` / `sketch6swap`): one `{"kind": "S" | "G",
+  "pos": [x, y], "height": h}` per drawn box.
 - World y increases **upward**; image row 0 is the top.
 
 ---
@@ -105,6 +107,13 @@ third of scenes, then written in the single-box form):
 | `boxrooms` | 1–4 small rooms of walls (sides 10–30, often against the frame, 1–2 doors); boxes inside some rooms and outside others; in 60 % of scenes a room with no box | a room is not a box |
 | `walls_multi` | `walls` with several boxes | any exit counts |
 | `rooms_multi` | `rooms` with several boxes | any exit counts |
+
+`--layout mixed4` (sketch v6, DESIGN_SKETCH §10.2) is `mixed3` with the hard
+cases of `layouts.MIX_OPTIONS["mixed4"]`: free-form boxes 6–16 units on the
+short side, each box with p = 0.3 slid to 0.3–2 units from a wall's or the
+frame's surface, room corners (`room`, `boxrooms`) left open or crossed with
+p = 0.5 each, and in 30 % of scenes a slit (two parallel walls 3–8 apart).
+`LayoutOptions()` (the default) changes nothing.
 
 Every scene is validated before it is written: start must reach goal for a
 disk of the agent's radius, and the narrowest passage must exceed

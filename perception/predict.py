@@ -85,6 +85,8 @@ def predict_tensor(model, x: torch.Tensor, device, want_probs: bool = False) -> 
         if "heat" in out:
             r["heat"] = out["heat"][b, 0].float().cpu().numpy()
             r["dir"] = out["dir"][b].float().cpu().numpy()
+        if "letter" in out:                                   # (2, S, S): S / G letter heat
+            r["letter"] = out["letter"][b].float().cpu().numpy()
         res.append(r)
     return res
 
@@ -137,7 +139,7 @@ class Predictor:
         """(prediction dict, Parsed or None)."""
         pred = self(image_uint8)
         parsed = extract(pred["labels"], world or self.world, pred.get("heat"), pred.get("dir"),
-                         self.ecfg)
+                         self.ecfg, letter=pred.get("letter"))
         return pred, parsed
 
 
@@ -160,6 +162,8 @@ def main(argv=None):
                    help="override the run's: exits = every G box is an exit (sketch v5)")
     p.add_argument("--heat-thresh", type=float, default=None, help="override the run's")
     p.add_argument("--heat-nms-factor", type=float, default=None, help="override the run's")
+    from runconfig import add_letter_flags
+    add_letter_flags(p)
     a = p.parse_args(argv)
     if not a.image and not a.dir:
         p.error("give --image or --dir")
@@ -170,9 +174,11 @@ def main(argv=None):
         pr.ecfg = replace(pr.ecfg, wall_mode=a.wall_mode)
     if a.region_by_agents:
         pr.ecfg = replace(pr.ecfg, region_by_agents=True)
-    for k in ("goal_mode", "heat_thresh", "heat_nms_factor"):
+    for k in ("goal_mode", "heat_thresh", "heat_nms_factor", "letter_gate", "letter_thresh", "min_box_side"):
         if getattr(a, k) is not None:
             pr.ecfg = replace(pr.ecfg, **{k: getattr(a, k)})
+    if pr.ecfg.letter_gate and not getattr(pr.cfg.model, "letter_head", False):
+        p.error("--letter-gate needs a model with a letter head (sketch v6)")
     if a.image:
         paths = [Path(a.image)]
     elif a.photo:

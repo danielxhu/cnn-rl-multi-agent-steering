@@ -7,6 +7,7 @@
     python train.py ... --resume                   # continue from ckpt_last.pt
     python train.py ... --init runs/x/ckpt_best.pt --epochs 15   # fine-tune from a trained model
     python train.py ... --heat-sigma 0.5 --goal-mode exits         # sketch v5 (DESIGN_SKETCH §9.2)
+    python train.py ... --letter-head --letter-gate --min-box-side 3 # sketch v6 (DESIGN_SKETCH §10.5)
 
 Run directory contents:
     config.json     resolved RunConfig + git hash + argv
@@ -25,6 +26,8 @@ Invariants:
 - Resuming restores optimiser, scaler, scheduler and RNG state, so an
   interruption costs at most one epoch. ``--init`` only loads model weights
   (fine-tuning); a resumed run ignores it and continues from ckpt_last.pt.
+  The one mismatch ``--init`` tolerates is a letter head the checkpoint lacks
+  (it keeps its initialisation, DESIGN_SKETCH §10.3).
 """
 from __future__ import annotations
 
@@ -44,14 +47,14 @@ from data import SceneDataset, class_frequencies, concat_datasets, make_loader, 
 from extract import extract
 from losses import class_weights_from_freq, total_loss
 from metrics import aggregate, scene_metrics
-from model import build_model, count_params
+from model import build_model, count_params, load_init_weights
 from predict import predict_dataset, resolve_device
 from runconfig import RunConfig, build_parser, resolve_amp, train_dirs
 from viz import grid, preview_row
 
 LOG_COLUMNS = ["epoch", "lr", "train_loss", "loss_seg", "loss_heat", "loss_dir",
                "val_pixacc", "val_miou", "val_iou_agent", "val_agent_f1",
-               "val_agent_center_err", "seconds"]
+               "val_agent_center_err", "seconds", "loss_letter"]
 LR_MIN = 1e-5
 
 
@@ -146,7 +149,8 @@ def validate_extract(model, ds: SceneDataset, indices, device, cfg: RunConfig, b
     preds = predict_dataset(model, ds, indices, device, batch)
     rows, arows = [], []
     for i, pr in zip(indices, preds):
-        parsed = extract(pr["labels"], ds.worlds[i], pr.get("heat"), pr.get("dir"), cfg.extract)
+        parsed = extract(pr["labels"], ds.worlds[i], pr.get("heat"), pr.get("dir"), cfg.extract,
+                         letter=pr.get("letter"))
         m, ar = scene_metrics(ds.scenes[i], ds.labels512(i), parsed, pr["labels"], ds.worlds[i],
                               ds.size, sid=ds.ids[i], goal_mode=cfg.extract.goal_mode)
         m["layout"] = ds.layouts[i]
@@ -160,7 +164,8 @@ def write_preview(model, ds: SceneDataset, indices, path, device, cfg: RunConfig
     preds = predict_dataset(model, ds, indices, device, batch)
     rows = []
     for i, pr in zip(indices, preds):
-        parsed = extract(pr["labels"], ds.worlds[i], pr.get("heat"), pr.get("dir"), cfg.extract)
+        parsed = extract(pr["labels"], ds.worlds[i], pr.get("heat"), pr.get("dir"), cfg.extract,
+                         letter=pr.get("letter"))
         rows.append(preview_row(ds.image_uint8(i), ds.labels_uint8(i), pr["labels"], parsed,
                                 ds.scenes[i]))
     Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -188,7 +193,8 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
     root = Path(dcfg.root)
     train_ds = concat_datasets([
         SceneDataset(root / name, dcfg.size, instance_targets=cfg.model.instance_head,
-                     layouts=dcfg.layouts, cache=dcfg.cache, heat_sigma=tcfg.heat_sigma)
+                     layouts=dcfg.layouts, cache=dcfg.cache, heat_sigma=tcfg.heat_sigma,
+                     letter_targets=cfg.model.letter_head)
         for name in train_dirs(dcfg)])
     val_ds = SceneDataset(root / dcfg.val, dcfg.size, instance_targets=False, layouts=dcfg.layouts)
     class_weights = class_weights_from_freq(class_frequencies(train_ds))
@@ -208,8 +214,9 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
     last = run_dir / "ckpt_last.pt"
     if tcfg.init and not (resume and last.exists()):
         rec = torch.load(tcfg.init, map_location="cpu", weights_only=False)
-        model.load_state_dict(rec["model"])          # same arch and heads, or this raises
-        print(f"initialised from {tcfg.init} (epoch {rec.get('epoch')})")
+        fresh = load_init_weights(model, rec["model"])  # same arch and heads (a new letter head aside)
+        print(f"initialised from {tcfg.init} (epoch {rec.get('epoch')})"
+              + (f"; new and initialised: {', '.join(fresh)}" if fresh else ""))
     if resume and last.exists():
         rec = torch.load(last, map_location="cpu", weights_only=False)
         model.load_state_dict(rec["model"])
@@ -241,7 +248,7 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
     for epoch in range(start_epoch, tcfg.epochs):
         t0 = time.time()
         model.train()
-        sums = {"loss": 0.0, "seg": 0.0, "heat": 0.0, "dir": 0.0, "lr": 0.0}
+        sums = {"loss": 0.0, "seg": 0.0, "heat": 0.0, "dir": 0.0, "letter": 0.0, "lr": 0.0}
         n_batches = 0
         for batch_cpu in train_loader:
             b = to_device(batch_cpu, device)
@@ -255,7 +262,7 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
             sched.step()
             sums["lr"] += opt.param_groups[0]["lr"]              # mean lr over the epoch
             sums["loss"] += float(loss.detach())
-            for k in ("seg", "heat", "dir"):
+            for k in ("seg", "heat", "dir", "letter"):
                 sums[k] += parts[k]
             n_batches += 1
         n_batches = max(1, n_batches)
@@ -271,6 +278,7 @@ def train(cfg: RunConfig, resume: bool = False, device=None) -> Path:
         row = {"epoch": epoch + 1, "lr": sums["lr"] / n_batches,
                "train_loss": sums["loss"] / n_batches, "loss_seg": sums["seg"] / n_batches,
                "loss_heat": sums["heat"] / n_batches, "loss_dir": sums["dir"] / n_batches,
+               "loss_letter": sums["letter"] / n_batches,
                "val_pixacc": pix["pixacc"], "val_miou": pix["miou"],
                "val_iou_agent": pix["iou_agent"],
                "val_agent_f1": "" if f1 is None else f1,

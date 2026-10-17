@@ -176,6 +176,8 @@ class Scene:
     # when set, start_region / goal_region are their first members
     starts: list | None = None
     exits: list | None = None
+    # sketch v6: one {"kind": "S" | "G", "pos": [x, y], "height": h} per drawn box
+    letters: list | None = None
 
     def goal_for(self, agent: Agent):
         """The agent's own goal, else any exit, else the scene goal (DESIGN_SKETCH §9.4)."""
@@ -222,6 +224,8 @@ class Scene:
             d["starts"] = [r.as_list() for r in self.starts]
         if self.exits is not None:
             d["exits"] = [r.as_list() for r in self.exits]
+        if self.letters is not None:
+            d["letters"] = [dict(v) for v in self.letters]
         if cfg is not None:
             d["world"] = {
                 "size": cfg.world,
@@ -249,6 +253,7 @@ class Scene:
             bottleneck=d.get("bottleneck"),
             starts=[Region.from_list(r) for r in d["starts"]] if d.get("starts") is not None else None,
             exits=[Region.from_list(r) for r in d["exits"]] if d.get("exits") is not None else None,
+            letters=[dict(v) for v in d["letters"]] if d.get("letters") is not None else None,
         )
 
 
