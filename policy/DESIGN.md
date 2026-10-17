@@ -197,7 +197,9 @@ actor and critic (`torch.set_num_threads(1)`). Per iteration:
    bootstrap_value` plus the recurrent state at the start of every
    sequence chunk (§3.4) and per-episode outcome records for logging;
 3. `W = 0` runs the same code inline in the learner process (tests, Mac,
-   debugging); for the same seeds it must produce the same batch as `W ≥ 1`.
+   debugging), as `inline_workers` (default 1) `RolloutWorker`s one after
+   another; for the same seeds it produces the same batch as a pool of that
+   many workers.
 
 One iteration therefore holds `W·E·T·8` slot-steps, of which the alive ones
 (≈ 40 k with the defaults) are agent transitions. **Budget and progress are
@@ -283,11 +285,13 @@ Run directory:
 | `log.csv` | §3.5 |
 | `val.csv` | one row per validation: `iteration, agent_steps` + the overall metrics of §5.3 + `success_<layout>` for each layout |
 | `ckpt_last.pt` | weights, optimiser, reward normaliser, per-slot return carry, iteration, agent-steps, RNG states, `config` |
-| `ckpt_best.pt` | weights + config at the best validation (highest `success_rate`; ties → lower `collision_rate`) |
+| `ckpt_best.pt` | (only when `--val-suite` is given) weights + config at the best validation (highest `success_rate`; ties → lower `collision_rate`) |
 
 Validation every `val_every = 25` iterations and at the end: deterministic
 policy on the `val` suite (§5.1), in a process pool. `--resume` continues
-from `ckpt_last.pt` with every piece of state restored (env state is not
+from `ckpt_last.pt` (the run's config is read from the checkpoint; only
+`--total-steps`, `--workers` and `--device` may be overridden) with every piece
+of state restored (env state is not
 restored: the workers start fresh scenes from re-seeded generators derived
 from `(seed, iteration)`); a finished run exits at once. Checkpoint every
 `ckpt_every = 25` iterations and on Ctrl-C.
@@ -340,11 +344,14 @@ n_agents, bottleneck` and
 `metrics.json`: per suite, `overall` (means over scenes) and `per_layout`;
 `per_bottleneck` with bins `[5.2, 7), [7, 10), [10, 15), [15, ∞)` (E4 needs
 the split). `trajectories/<suite>_<scene>.json` for the scenes chosen by
-§6 (first scene of each layout), for the path figures.
+§6 (first scene of each layout), for the path figures; each file also embeds the
+scene (`scene_data`) so the figure needs no data root.
 
 ## 6. Aggregation and figures (`aggregate.py`, `plots.py`)
 
-`aggregate.py --evals E:\policy-eval --out results/e2` reads every
+`aggregate.py --evals E:\policy-eval --out results/e2 [--runs E:\policy-runs]` (`--runs` locates
+`val.csv` for the training curves; default: the folder of each evaluated
+checkpoint) reads every
 evaluation directory and writes:
 
 | Output | Contents |
@@ -422,14 +429,15 @@ class MultiAgentEnv:
 def collect(model, envs, state, T) -> Batch                            # inline (W = 0)
 class WorkerPool:  start(), collect(weights) -> Batch, close()
 # ppo.py
-def gae(batch, gamma, lam) -> tuple[np.ndarray, np.ndarray]           # advantages, returns
-class RewardScaler: update(rewards, dones) / scale(rewards) / state_dict()
-def update(model, optimiser, batch, cfg) -> dict                       # loss statistics
+def gae(batch, gamma, lam, reward=None) -> tuple[np.ndarray, np.ndarray]           # advantages, returns
+class RewardScaler: update(rewards, dones, alive) / scale(rewards) / state_dict()
+def replay(model, batch, L) -> (logp, value, entropy)                  # re-evaluate a batch
+def update(model, optimiser, batch, adv, ret, cfg, device, rng) -> dict   # loss statistics
 # suites.py
 def make_suite(out_dir, layouts, per_layout, agents, obstacles, seed, sim_cfg)
 def load_suite(path) -> list[tuple[str, Scene]]
 # evaluate.py
-def run_episode(scene, controller, sim_cfg, env_cfg, record=False) -> dict   # §5.3 row (+ trajectories)
+def run_episode(scene, controller, sim_cfg, env_cfg=None, record=False) -> dict   # §5.3 row (+ trajectories)
 ```
 
 Module names must not collide with `sim/` modules (`config, scene, render,
@@ -495,6 +503,8 @@ Same harness style as `sim/tests/run_tests.py`.
     JSON; headings are not the generator's.
 13. `test_greedy_episode_matches_simulator` — `run_episode` with the greedy
     controller reproduces `Simulator.stats()` of a hand-stepped episode.
+15. `test_update_is_finite_with_tiny_minibatches` — regression: a minibatch with a
+    single alive entry once made the advantage std NaN.
 14. `test_smoke_train_eval_aggregate` — a tiny run (W = 0, E = 2, T = 16,
     3 iterations) writes every §4 file; `evaluate.py` on a 10-scene suite and
     `aggregate.py` on that write every §5–§6 file.
@@ -600,3 +610,16 @@ Generate any scratch data into `policy/data/` (git-ignored).
 
 Filled in by the implementing agent: one line per deviation from §1–§10 —
 what changed, why, which section was updated.
+
+One line per deviation (section changed in brackets):
+
+- `WorkerPool(W=0)` runs `inline_workers` (default 1) workers rather than "the pool's W", so the equality of §3.1 / test 9 is stated against a pool of the same size. [§3.1]
+- `RewardScaler.update` takes `alive` (statistics only over acting agents); `gae` takes an optional scaled `reward`; `update` takes `adv, ret, device, rng`; added `replay`. [§8.1]
+- Minibatches are `np.array_split` of the shuffled sequences (no small tail batch) and the advantage std is skipped for a single alive entry: the first draft produced NaN weights at iteration 15 of the dev run. Test 15 pins it. [§3.4, §9]
+- The replay check (§3.4) runs at iteration 1 and every 25th (`--check-replay-every`), printing a warning above 1e-4 (1e-2 on GPU), not before every update, to save a forward pass. [§3.4]
+- `ckpt_best.pt` exists only when a validation suite is given. [§4]
+- On `--resume` the config comes from the checkpoint; only budget, workers and device can change. [§4]
+- Trajectory files embed the scene; `aggregate.py` gets an optional `--runs`. [§5.3, §6]
+- `run_episode`'s `env_cfg` argument is optional and unused (the controller carries it). [§8.1]
+- `run_e2.py` has `--eval-workers` (validation / evaluation processes, default 6) and passes `--val-workers` to training. [§7]
+- Added test 15. [§9]
