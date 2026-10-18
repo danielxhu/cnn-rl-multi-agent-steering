@@ -166,18 +166,46 @@ class Simulator:
         return False
 
     def _hits_agent(self, i) -> bool:
+        """End-of-step overlap with an active agent (reporting helper; ``step``
+        uses the swept, order-free test ``_peer_hits``)."""
         r2 = 2 * self.cfg.agent_radius
         for j in range(len(self.pos)):
             if j != i and self.active[j] and np.hypot(*(self.pos[i] - self.pos[j])) < r2:
                 return True
         return False
 
+    def _peer_hits(self, prev_pos, moving) -> np.ndarray:
+        """(n,) bool: agents that touched another moving agent at any time during the step.
+
+        Both agents move in a straight line within a step, so their separation
+        is linear in time and its minimum over the step has a closed form. An
+        end-of-step test misses grazing passes: two agents closing at 2 *
+        max_speed = 5 per step can overlap by up to 0.85 mid-step and be 4
+        apart again at its end. The test is symmetric: both agents of a
+        contact are hit, whatever their index.
+        """
+        r2 = 2 * self.cfg.agent_radius
+        idx = np.flatnonzero(moving)
+        hit = np.zeros(len(self.pos), bool)
+        if len(idx) < 2:
+            return hit
+        d0 = prev_pos[idx][:, None, :] - prev_pos[idx][None, :, :]     # (m, m, 2) at step start
+        dv = (self.pos[idx][:, None, :] - self.pos[idx][None, :, :]) - d0
+        vv = (dv * dv).sum(-1)
+        t = np.where(vv > 1e-12, np.clip(-(d0 * dv).sum(-1) / np.maximum(vv, 1e-12), 0.0, 1.0), 0.0)
+        dmin = np.linalg.norm(d0 + t[..., None] * dv, axis=-1)
+        np.fill_diagonal(dmin, np.inf)
+        hit[idx] = (dmin < r2).any(1)
+        return hit
+
     # -- dynamics ---------------------------------------------------------
     def step(self, actions):
         """actions: (n, 2) array of (turn, speed), both normalised.
 
         turn in [-1, 1] scales max_turn_deg; speed in [0, 1] scales max_speed.
-        Every agent is advanced from the same pre-step world state.
+        Every agent is advanced from the same pre-step world state, and every
+        collision is decided from the same post-step state before anyone is
+        removed: a contact between two agents hits both, whatever their index.
         """
         c = self.cfg
         actions = np.asarray(actions, float).reshape(-1, 2)
@@ -185,6 +213,7 @@ class Simulator:
                            for i in range(len(self.pos))])
 
         moving = self.active.copy()
+        prev_pos = self.pos.copy()
         self.heading = np.where(
             moving, self.heading + np.clip(actions[:, 0], -1, 1) * c.max_turn, self.heading)
         self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
@@ -193,6 +222,9 @@ class Simulator:
             [np.cos(self.heading), np.sin(self.heading)], 1)
         self.steps += 1
 
+        # all collisions first, then the consequences: removing agent i before
+        # j is checked would hide i from j and punish only the lower index
+        peer_hit = self._peer_hits(prev_pos, moving)
         rewards = np.zeros(len(self.pos))
         for i in range(len(self.pos)):
             if not moving[i]:
@@ -202,7 +234,7 @@ class Simulator:
             rewards[i] = -c.step_cost + c.progress_weight * (prev_d[i] - d)
 
             static = self._hits_static(i)
-            peer = self._hits_agent(i)
+            peer = bool(peer_hit[i])
             if static or peer:
                 self.collisions[i] += 1
                 rewards[i] -= c.collision_penalty if static else c.agent_collision_penalty

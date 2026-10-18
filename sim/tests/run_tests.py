@@ -233,6 +233,46 @@ def test_collisions_can_be_counted_instead_of_terminating():
     assert "collision" not in sim.outcome, "agents should survive collisions in this mode"
 
 
+def _two_agent_sim(p0, h0, p1, h1):
+    goal = Region(90, 90, 95, 95)
+    s = Scene(walls=boundary_walls(100.0), layout="open", groups=[(Region(5, 5, 10, 10), goal)],
+              start_region=Region(5, 5, 10, 10), goal_region=goal,
+              agents=[Agent(pos=p0, heading=h0), Agent(pos=p1, heading=h1)])
+    sim = Simulator(s, Config())
+    sim.reset()
+    return sim
+
+
+@test
+def test_agent_contact_hits_both_agents():
+    # head-on, 6 apart, full speed: 1 apart after the step. Removing agent 0
+    # before agent 1 was checked used to leave agent 1 unpunished and active.
+    for order in (0, 1):
+        p = [(40.0, 50.0), (46.0, 50.0)]
+        h = [0.0, math.pi]
+        if order:
+            p, h = p[::-1], h[::-1]
+        sim = _two_agent_sim(p[0], h[0], p[1], h[1])
+        _, r, _ = sim.step(np.array([[0.0, 1.0], [0.0, 1.0]]))
+        assert sim.outcome == ["collision", "collision"], sim.outcome
+        assert (r < -20).all(), r          # both pay the agent penalty (progress terms differ)
+
+
+@test
+def test_grazing_pass_is_a_collision():
+    # lateral offset 3.5 < 2 * radius: the agents overlap mid-step (closest 3.5)
+    # but are more than 4 apart at both ends of the step
+    sim = _two_agent_sim((40.0, 50.0), 0.0, (42.5, 53.5), math.pi)
+    assert math.dist(*sim.pos) > 4.0
+    sim.step(np.array([[0.0, 1.0], [0.0, 1.0]]))
+    assert math.dist(*sim.pos) > 4.0
+    assert sim.outcome == ["collision", "collision"], sim.outcome
+    # a pass that stays 4.5 apart is not a collision
+    sim = _two_agent_sim((40.0, 50.0), 0.0, (42.5, 54.5), math.pi)
+    sim.step(np.array([[0.0, 1.0], [0.0, 1.0]]))
+    assert sim.outcome == [None, None], sim.outcome
+
+
 @test
 def test_label_map_contains_every_class():
     cfg = Config()

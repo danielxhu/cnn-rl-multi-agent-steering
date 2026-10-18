@@ -17,7 +17,7 @@ python generate.py --n 3000 --layout mixed --agents 3-8 --obstacles 2-6 --seed 0
 
 ```bash
 python generate.py --n 7 --layout mixed --preview 7 --out data/preview   # one scene per layout
-python tests/run_tests.py                                                # 16 tests, ~20 s
+python tests/run_tests.py                                                # 26 tests, ~60 s
 ```
 
 No system Python? `uv run --python 3.12 --with numpy --with opencv-python-headless --with pillow python generate.py ...`
@@ -214,6 +214,14 @@ bearing, own speed. In a scene with `exits` the goal is the nearest exit
 **Reward:** `+goal_bonus` on arrival, `-collision_penalty` (wall/obstacle) or
 `-agent_collision_penalty`, `-step_cost` per step, `+progress_weight ×`
 goal-distance decrease.
+
+**Collision:** decided for every agent from the same post-step state before
+anyone is removed, so a contact between two agents hits both, whatever their
+index. Agent–agent contact is swept over the step (closed-form minimum of the
+linear separation): two agents closing at 5 per step cannot graze through each
+other. Walls and obstacles are tested at the end of the step; their contact
+bands (≥ 7 wide) are wider than a step, so at most 0.23 of overlap can go
+unseen there.
 
 **End:** arrival, collision (if `terminate_on_collision`), or `max_steps`.
 `stats()` gives success / collision / timeout rates and collision violations,
