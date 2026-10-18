@@ -132,6 +132,9 @@ def main(argv=None):
 
     banner("6. commit and push")
     run(["git", "add", results], dry, cwd=REPO)
+    if not dry and subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO).returncode == 0:
+        print("  nothing new to commit")             # a re-run after everything was pushed
+        return
     run(["git", "commit", "-m", "E2: baseline policy results (mlp vs gru, greedy)"], dry, cwd=REPO)
     if a.no_push:
         print("  --no-push: not pushing")
