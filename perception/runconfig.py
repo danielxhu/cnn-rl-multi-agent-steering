@@ -227,6 +227,9 @@ def add_letter_flags(g):
                    help="letter heat a box needs (default 0.3)")
     g.add_argument("--min-box-side", dest="min_box_side", type=float, default=None,
                    help="drop boxes with a shorter side, world units (v6: 3.0; 0 = off)")
+    g.add_argument("--no-letter-suppress", dest="letter_suppress_agents", action="store_const",
+                   const=False, default=None,
+                   help="with the letter gate, keep agent peaks that sit on a stronger letter peak")
 
 
 def build_parser(description="Train one perception run.") -> argparse.ArgumentParser:

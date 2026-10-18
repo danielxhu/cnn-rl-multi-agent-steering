@@ -174,7 +174,8 @@ def main(argv=None):
         pr.ecfg = replace(pr.ecfg, wall_mode=a.wall_mode)
     if a.region_by_agents:
         pr.ecfg = replace(pr.ecfg, region_by_agents=True)
-    for k in ("goal_mode", "heat_thresh", "heat_nms_factor", "letter_gate", "letter_thresh", "min_box_side"):
+    for k in ("goal_mode", "heat_thresh", "heat_nms_factor", "letter_gate", "letter_thresh", "min_box_side",
+              "letter_suppress_agents"):
         if getattr(a, k) is not None:
             pr.ecfg = replace(pr.ecfg, **{k: getattr(a, k)})
     if pr.ecfg.letter_gate and not getattr(pr.cfg.model, "letter_head", False):

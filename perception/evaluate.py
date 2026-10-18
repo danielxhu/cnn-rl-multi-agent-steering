@@ -21,7 +21,7 @@ Outputs, next to the checkpoint unless ``--out`` is given (DESIGN.md §3.4, §5)
 Every set is evaluated at the checkpoint's own resolution, with the run's own
 extractor settings unless ``--goal-mode`` / ``--heat-thresh`` /
 ``--heat-nms-factor`` / ``--region-by-agents`` / ``--letter-gate`` /
-``--no-letter-gate`` / ``--letter-thresh`` / ``--min-box-side`` override them
+``--no-letter-gate`` / ``--letter-thresh`` / ``--min-box-side`` / ``--no-letter-suppress`` override them
 (for instance a tuned threshold, or the v4 model scored as exit sets on sketch
 v5 scenes). The letter gate (sketch v6) is switched off, with a printed note,
 for any set whose ``dataset.json`` style is not a sketch style: rendered images
@@ -204,12 +204,14 @@ def examples_figure(ds: SceneDataset, kept: dict, ecfg, path: Path):
 # --------------------------------------------------------------- evaluate
 
 def extract_overrides(ecfg, goal_mode=None, heat_thresh=None, heat_nms_factor=None,
-                      region_by_agents=None, letter_gate=None, letter_thresh=None, min_box_side=None):
+                      region_by_agents=None, letter_gate=None, letter_thresh=None, min_box_side=None,
+                      letter_suppress_agents=None):
     """The run's ExtractConfig with the given (non-None) fields replaced."""
     over = {k: v for k, v in dict(goal_mode=goal_mode, heat_thresh=heat_thresh,
                                   heat_nms_factor=heat_nms_factor, region_by_agents=region_by_agents,
                                   letter_gate=letter_gate, letter_thresh=letter_thresh,
-                                  min_box_side=min_box_side).items() if v is not None}
+                                  min_box_side=min_box_side,
+                                  letter_suppress_agents=letter_suppress_agents).items() if v is not None}
     return replace(ecfg, **over) if over else ecfg
 
 
@@ -379,7 +381,8 @@ def main(argv=None):
     a = p.parse_args(argv)
     over = dict(goal_mode=a.goal_mode, heat_thresh=a.heat_thresh, heat_nms_factor=a.heat_nms_factor,
                 region_by_agents=a.region_by_agents, letter_gate=a.letter_gate,
-                letter_thresh=a.letter_thresh, min_box_side=a.min_box_side)
+                letter_thresh=a.letter_thresh, min_box_side=a.min_box_side,
+                letter_suppress_agents=a.letter_suppress_agents)
     if a.tune_extract:
         tune_extract(a.ckpt, a.data[0], a.out, a.ring_grid, a.heat_grid, a.limit, a.device, a.batch,
                      nms_grid=a.nms_grid, overrides=over, letter_grid=a.letter_grid)
