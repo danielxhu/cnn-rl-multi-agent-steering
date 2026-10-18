@@ -89,14 +89,21 @@ LABEL_MAP_KEYS = ["pixacc", *[f"iou_{n}" for n in CLASS_NAMES], "miou", "wall_io
 
 
 def dataset_style(path: Path):
-    """The generator style recorded in <set>/dataset.json ("render", "sketch5", ...), or None."""
+    """The generator style recorded in <set>/dataset.json ("render", "sketch5", ...), or None.
+
+    A set made by generate.py records its arguments; one made before `--style`
+    existed (test, test_aug3, ... of 22 Sep) has no "style" and is rendered.
+    None only for sets not made by generate.py (ingested photos)."""
     p = Path(path) / "dataset.json"
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8")).get("args", {}).get("style")
+        args = json.loads(p.read_text(encoding="utf-8")).get("args")
     except (OSError, ValueError):
         return None
+    if not isinstance(args, dict):
+        return None
+    return args.get("style", "render")
 
 
 def set_ecfg(ecfg, path: Path, name: str):

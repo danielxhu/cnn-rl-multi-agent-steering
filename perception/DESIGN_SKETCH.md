@@ -873,6 +873,14 @@ parsed and simulated as exits. Thin lines are not addressed.
 
 ---
 
+- *Fix after the first run (17 Oct).* `evaluate.py` read a set's style from
+  `dataset.json` and kept the letter gate on when none was recorded. `test`
+  and `test_aug3` were generated on 22 Sep, before `--style` existed, so the
+  gate stayed on for rendered images: every box was dropped and every scene
+  failed to parse (`parse_fail` 1.0, while the segmentation was as good as
+  v5's). A set made by `generate.py` (it records `"args"`) without a style is
+  now `render`; only sets without `"args"` (ingested photos) give None.
+
 ## 10. Sketch v6: recognise by pattern, not by line width (spec, 16 Oct 2026; **built** 17 Oct, deviations in §8)
 
 **Why.** The v5 model on seven real drawings (`results/old_drawings_v5/`,
