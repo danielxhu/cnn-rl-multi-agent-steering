@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from dataclasses import replace as _replace
 
 import cv2
 import numpy as np
@@ -783,6 +784,13 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig(), letter=Non
     if ecfg.goal_mode == "exits":
         boxes, goals = extract_boxes(labels == C_START, labels == C_GOAL, scale, world, ecfg, agent_pos,
                                      letter, diag, agent_mask)
+        diag["gate_fallback"] = False
+        if ecfg.letter_gate and not goals:
+            # no G read anywhere (a letter too small or faint): rather than fail the
+            # whole scene, take the exits the segmentation says, as without the gate
+            _, goals = extract_boxes(labels == C_START, labels == C_GOAL, scale, world,
+                                     _replace(ecfg, letter_gate=False), agent_pos, None, {}, agent_mask)
+            diag["gate_fallback"] = bool(goals)
         boxes, goals, diag["dropped_nested_boxes"] = _drop_nested(boxes, goals)
         # an agent may be drawn on its box's edge: within one agent radius counts
         tol = float(world["agent_radius"])

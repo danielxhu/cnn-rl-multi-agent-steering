@@ -977,8 +977,10 @@ def test_letter_gate_keeps_box_with_agents():
                                   agent_pos=[a.pos for a in s.agents], letter=none, diag=diag)
     assert diag["kept_by_agents"] == 1 and diag["dropped_no_letter"] == 1 and goals == []
     assert len(starts) == 1 and region_iou(starts[0], s.start_region) > 0.9
-    # (no exit left: in exits mode that is a parse failure, as for any scene without one)
-    assert extract(lab, world, heat=heat[0], dir=dirs, ecfg=gate, letter=none) is None
+    # no exit read at all: the parse falls back to the segmentation's exits instead of failing
+    f = extract(lab, world, heat=heat[0], dir=dirs, ecfg=gate, letter=none)
+    assert f is not None and f.diagnostics["gate_fallback"] and len(f.scene.exits) == 1
+    assert region_iou(f.scene.exits[0], s.goal_region) > 0.9 and len(f.scene.starts) == 1
     # with a G in the goal box: one start kept by its agents, one exit by its letter
     g_only = _letter_map(cfg, cfg.img_size, [("G", (85.0, 50.0), 4.0)])
     q = extract(lab, world, heat=heat[0], dir=dirs, ecfg=gate, letter=g_only)

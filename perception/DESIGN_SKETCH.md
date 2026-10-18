@@ -880,6 +880,15 @@ parsed and simulated as exits. Thin lines are not addressed.
   failed to parse (`parse_fail` 1.0, while the segmentation was as good as
   v5's). A set made by `generate.py` (it records `"args"`) without a style is
   now `render`; only sets without `"args"` (ingested photos) give None.
+- *Gate fallback (17 Oct).* First v6 numbers: with the gate, `test_sketch5`
+  usable 0.938 against v5's 0.954; `parse_fail` 0.013 against 0.002 without
+  the gate, and each failed scene counts all its agents as missed (agent F1
+  0.983 against 0.994). Agent suppression is not the cause (switched off with
+  the new `--no-letter-suppress`: identical numbers). The cause is v5's
+  letters, which may be smaller than v6's 2.5-unit floor: no G read, every
+  exit dropped, no exit, parse failed. Now, in exits mode, when the gate
+  leaves no exit the extractor takes the segmentation's exits as without the
+  gate (`diagnostics["gate_fallback"]`) instead of failing the scene.
 
 ## 10. Sketch v6: recognise by pattern, not by line width (spec, 16 Oct 2026; **built** 17 Oct, deviations in §8)
 
