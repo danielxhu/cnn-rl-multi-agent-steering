@@ -1057,3 +1057,122 @@ above are gone or reduced to "box dropped" (never "box invented").
 | `perception`: `test_letter_gate` | box without letter heat dropped; box with G heat but start class becomes an exit; gate off = v5 result |
 | `perception`: `test_agent_on_letter_suppressed` | agent peak on a stronger letter peak dropped, one 3 radii away kept |
 | `perception`: `test_min_box_side` | a 2 × 10 box dropped at 3.0, kept at 0 |
+
+---
+
+## 11. Sketch v7: context, slanted lines, agents outside boxes (spec, 19 Oct 2026)
+
+**Why.** Five drawings parsed live with v6 at the advisor meeting
+(`results/drawings_meeting/`): one fully right, two nearly, two wrong.
+
+| Observed (v6) | Cause |
+|---|---|
+| C12B: the middle of a long free-standing wall segmented as **goal region**, so the wall was lost | context. A long straight line is, locally, either a wall or one side of a narrow box; only the far side, the short sides or the letter decide, and they can lie beyond the network's receptive field (≈ 90 px at 256 ≈ 35 world units). v6 removed the width cue, so context must carry the decision. A probe on C12B: the wall pixels are labelled goal along most of their length |
+| A3D4 (advisor): two sides of a **tilted** S box read as walls | boxes are always drawn axis-aligned (corner jitter σ 3 px only) |
+| A3D4: one of three agents missed; its tail is drawn **through** the circle | agents always have a tail from the centre outward |
+| C12B: a small G box whose letter fills it read as an obstacle | letters are at most 0.55 × the box's shorter side |
+| 5842: a slanted room wall broken into two pieces (a false door) | room walls are axis-parallel; slanted walls rare |
+| 1B87, 5842: 1–9-unit wall stubs on S box sides (tails across a side, sides drawn past the corners) | the extractor keeps any wall-class piece |
+| A3D4: obstacles touching the S box | obstacles keep off boxes |
+
+A quick extractor-only fix (thin region strips back to wall) was tried on the
+five drawings and did not help: the problem is in the segmentation.
+
+Advisor's remarks (19 Oct): agents need not be inside a start box, and lines
+may be slanted. Decisions (author, 19 Oct): **both** slanted walls and tilted
+boxes; agents are sometimes in S boxes and sometimes drawn anywhere, with no
+S box at all.
+
+### 11.1 Model: a context block
+
+`ModelConfig.context`: `"none"` (default; every earlier model unchanged) or
+`"dilated"`: a residual block on the deepest features (width 192 at
+`unet24x4`, 1/8 resolution) of three 3 × 3 conv → BN → ReLU layers with
+dilation 2, 4, 8, added to its input. The last BN's weight starts at 0, so
+the block is the identity at initialisation and a v6 checkpoint fine-tunes
+from exactly its own behaviour. Receptive field: + 2·(2+4+8)·8 = 224 px, the
+whole 256 image. ≈ +1.0 M parameters (≈ 2.1 M total). `--init` tolerates the
+missing context block as it tolerates a missing letter head; any other
+mismatch still raises. Report the epoch time against v6.
+
+### 11.2 Generator: `--style sketch7`, `--layout mixed5`
+
+`SKETCH_V7 = replace(SKETCH_V6, …)`; v1–v6 and every existing layout and mix
+stay byte-identical (hashes). New layout options default to "off".
+`MIXES["mixed5"]` = `mixed4` with:
+
+- **Agents outside boxes** (`agent_placement`): per scene, "boxes" (p 0.6,
+  as now), "mixed" (0.2: some start boxes, the other agents anywhere in free
+  space), "free" (0.2: no start box, every agent anywhere). Free agents keep
+  the simulator's spacing and clearances; every agent must reach an exit.
+  `Scene.starts` may be empty; simulator, renderers, reachability and JSON
+  must accept that.
+- **Slanted walls** (`slant_prob` 0.4 per free-form wall): any angle instead
+  of axis-parallel. Rooms (`room`, `boxrooms`, `rooms*`): with p 0.3 one or
+  two walls of a room tilted by U(5°, 25°), the room staying closed except
+  its doors. Solvability and `min_bottleneck` as now.
+- **Tilted boxes** (`box_tilt_prob` 0.4): the drawn quadrilateral rotated
+  about the box centre by U(−25°, 25°), shrunk if needed so every agent of
+  the box stays inside it with its drawn radius. The simulator's region and
+  the JSON stay the axis-aligned bounding box of the drawn quadrilateral
+  (the §3.1 convention); the label map is the rotated interior.
+- **Box sides past the corners** (p 0.3 per box): a side runs on by U(0.1,
+  0.35) × its length at one or both ends.
+- **Agent glyphs**: per agent, tail from the centre (p 0.55, as now), from the
+  circle's edge outward (0.3), or through the circle (0.15: the stroke starts
+  on the far side, crosses the centre and leaves along the heading). The heat
+  target stays at the circle's centre, the heading along the outer part.
+- **Big letters**: in 30 % of boxes the letter is U(0.6, 0.85) × the shorter
+  side.
+- **Touching**: with p 0.3 an obstacle is placed touching a box from outside
+  or a wall (gap U(−0.3, 0.5) units between drawn outlines); agents may touch
+  their box's sides from inside.
+- **Long lines next to boxes** (p 0.3 per scene): a free-standing wall,
+  U(25, 70) long, parallel to a box's long side at U(4, 20) units — the C12B
+  case.
+
+### 11.3 Extractor
+
+- `wall_on_box_tol` (0 = off; v7 1.5 units): a wall piece lying along a kept
+  box's border (within the tolerance over ≥ 70 % of its length, ≤ 15° from
+  that side) is dropped (`diagnostics["walls_on_boxes"]`); a piece shorter
+  than `stub_len` (0 = off; v7 3.0 units) touching a box is dropped too.
+- Slanted lines: a wall drawn at 5°–25° must come out as one segment, not an
+  axis-parallel piece plus a slanted piece. Check `line_axis_deg` (10°) and
+  the joining on generated slanted rooms; change what is needed, keeping
+  axis-parallel walls as today.
+- Exits mode already allows no start box; `region_set_ok` must score a scene
+  without true starts as right when no start is parsed.
+
+### 11.4 Datasets, training, evaluation
+
+- `train_sketch7` / `val_sketch7` / `test_sketch7`: 5000 / 500 / 1000, seeds
+  170 / 270 / 370, `--style sketch7 --layout mixed5`. Probes, 500 each:
+  `test_sketch7_free` (every scene "free" or "mixed", seed 371),
+  `test_sketch7_tilt` (every box tilted, slant_prob 1, seed 372),
+  `test_sketch7_lines` (every scene with a long line next to a box, seed 373).
+- Train: `--init` the v6 model, `--context dilated`, `train_sketch7
+  train_sketch6 train_aug3`, val `val_sketch7`, everything else as v6
+  (`--wall-on-box-tol 1.5 --stub-len 3`), 30 epochs.
+- `scripts/run_v7.py` like `run_v6.py`. Evaluations: v7 on every earlier test
+  set and the four v7 sets; v6 on the four v7 sets (`sketch6_on_sketch7`);
+  aggregate → `results/sketch7`. Real drawings: every photo in
+  `old_drawings_v4/input`, `drawings_v5/input` and `drawings_meeting/input`
+  (9) → `results/drawings_v7/`, compare = photo | v6 clean | v7 overlay | v7
+  clean, plus `summary.md`.
+- Must hold: no earlier test set drops by more than 0.5 point of
+  `scene_usable`. Expected: `test_sketch7_lines` and the C12B wall fixed by
+  the context block (v6 low on that probe, v7 near `test_sketch7`); tilted
+  boxes and through-tails parsed; agents outside boxes parsed with no start.
+
+### 11.5 Tests to add
+
+| Test | Checks |
+|---|---|
+| `sim`: v1–v6, every layout / mix unchanged; v7 determinism | hashes |
+| `sim`: `test_mixed5_cases` | over 200 scenes every option occurs at about its rate; free agents valid and solvable; tilted quads hold their agents |
+| `sim`: `test_scene_without_starts` | a scene with no start box simulates, renders and round-trips JSON |
+| `perception`: `test_context_block_identity` | a v6-shaped checkpoint initialises a context model with identical outputs |
+| `perception`: `test_wall_on_box_dropped` | a wall along a box side and a 2-unit stub on a box dropped; a wall 4 units off a box kept |
+| `perception`: `test_slanted_wall_one_segment` | a 15° wall in a generated label map extracts as one segment |
+| `perception`: `test_agents_without_start_box` | agents with no S box parse; region_set_ok right with no starts |
