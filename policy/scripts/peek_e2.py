@@ -27,18 +27,25 @@ def main(argv=None):
             continue
         b = max(rows, key=lambda r: (float(r["success_rate"]), -float(r["collision_rate"])))
         log = list(csv.DictReader(open(d / "log.csv")))
-        best[d.name] = (b, int(float(log[-1]["agent_steps"])) if log else 0)
+        steps = int(float(log[-1]["agent_steps"])) if log else 0
+        hours = float(log[-1]["seconds"]) / 3600 if log else 0.0
+        sps = [float(r["agent_steps_per_s"]) for r in log[1:]]
+        best[d.name] = (b, steps, hours, sum(sps) / len(sps) if sps else 0.0)
     if not best:
         print(f"no val.csv under {a.runs}")
         return
     names = list(best)
     layouts = sorted(k[8:] for k in best[names[0]][0] if k.startswith("success_") and k != "success_rate")
     w = max(len(n) for n in names) + 2
-    print("run".ljust(w) + "steps".rjust(12) + "  best@".rjust(12) + "success".rjust(9) + "collision".rjust(11))
+    print("run".ljust(w) + "steps".rjust(12) + "hours".rjust(7) + "steps/s".rjust(9)
+          + "  best@".rjust(12) + "success".rjust(9) + "collision".rjust(11))
     for n in names:
-        b, steps = best[n]
-        print(n.ljust(w) + f"{steps:>12,}" + f"{int(float(b['agent_steps'])):>12,}"
+        b, steps, hours, sps = best[n]
+        print(n.ljust(w) + f"{steps:>12,}" + f"{hours:>7.1f}" + f"{sps:>9,.0f}"
+              + f"{int(float(b['agent_steps'])):>12,}"
               + f"{float(b['success_rate']):>9.3f}" + f"{float(b['collision_rate']):>11.3f}")
+    print("hours = wall clock while train.py ran (validation included); "
+          "steps/s = mean rollout + update speed")
     print("\nsuccess per layout at the best validation")
     print("layout".ljust(14) + "".join(n.replace("e2_", "")[:12].rjust(13) for n in names))
     for l in layouts:
