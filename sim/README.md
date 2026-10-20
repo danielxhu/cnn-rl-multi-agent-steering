@@ -17,7 +17,7 @@ python generate.py --n 3000 --layout mixed --agents 3-8 --obstacles 2-6 --seed 0
 
 ```bash
 python generate.py --n 7 --layout mixed --preview 7 --out data/preview   # one scene per layout
-python tests/run_tests.py                                                # 26 tests, ~60 s
+python tests/run_tests.py                                                # 27 tests, ~60 s
 ```
 
 No system Python? `uv run --python 3.12 --with numpy --with opencv-python-headless --with pillow python generate.py ...`
@@ -206,7 +206,11 @@ print(sim.stats())
 
 **Observation** (51 per agent, normalised, no absolute position): 16 FOV
 sectors × nearest {obstacle, wall, agent} distance, then goal distance, goal
-bearing, own speed. In a scene with `exits` the goal is the nearest exit
+bearing, own speed. Each sector is read by `rays_per_sector` rays (default 1,
+through the sector centre, 13.75° apart), not by its whole wedge: beyond
+2 / sin(6.875°) ≈ 16.7 another agent can fall between two rays unseen, and no
+ray points dead ahead. Obstacles (r ≥ 4) and walls are always seen;
+`rays_per_sector = 2` sees every agent within range. In a scene with `exits` the goal is the nearest exit
 (`scene.RegionSet`); arriving in any exit counts as `goal`.
 
 **Action:** `(turn, speed)`, `turn ∈ [-1, 1]` × `max_turn_deg`, `speed ∈ [0, 1]` × `max_speed`.

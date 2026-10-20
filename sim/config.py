@@ -62,6 +62,7 @@ class Config:
     fov_deg: float = 220.0                      # matches the research statement
     fov_range: float = 22.0
     n_sectors: int = 16
+    rays_per_sector: int = 1                    # rays cast per sector; the reading is their minimum
     max_turn_deg: float = 25.0
     max_speed: float = 2.5
     max_steps: int = 300

@@ -2,7 +2,8 @@
 
 Observation per agent (n_sectors * 3 + 3 numbers, all normalised to [0, 1] or [-1, 1]):
 
-    [ 0:16]  nearest obstacle distance per FOV sector
+    [ 0:16]  nearest obstacle distance per FOV sector: the minimum over
+             ``rays_per_sector`` rays in the sector (default 1, the sector's centre ray)
     [16:32]  same, for walls
     [32:48]  same, for other agents
     [48]     distance to goal region
@@ -62,10 +63,16 @@ class Simulator:
         self.cfg = cfg or Config()
         c = self.cfg
 
+        # K = rays_per_sector rays spread evenly over each sector, sector-major;
+        # the sector's reading is their minimum. K = 1 is one ray through the
+        # sector centre: 13.75 deg apart, so beyond 2 / sin(6.875 deg) = 16.7 an
+        # agent can sit between two rays unseen (and no ray points dead ahead).
+        # K = 2 sees every agent within fov_range = 22.
         half = math.radians(c.fov_deg) / 2.0
         step = math.radians(c.fov_deg) / c.n_sectors
+        K = max(1, int(c.rays_per_sector))
         self._sector_off = np.array(
-            [-half + (k + 0.5) * step for k in range(c.n_sectors)])
+            [-half + (k + (j + 0.5) / K) * step for k in range(c.n_sectors) for j in range(K)])
 
         self._obs_c = np.array([o.c for o in scene.obstacles], float).reshape(-1, 2)
         self._obs_r = np.array([o.r for o in scene.obstacles], float).reshape(-1)
@@ -132,9 +139,11 @@ class Simulator:
             d_ag = _ray_circles(p, dirs, self.pos[others],
                                 np.full(len(others), c.agent_radius))
         else:
-            d_ag = np.full(c.n_sectors, INF)
+            d_ag = np.full(len(dirs), INF)
 
         S = c.n_sectors
+        if len(dirs) != S:                           # several rays per sector: take the nearest
+            d_obs, d_wall, d_ag = (d.reshape(S, -1).min(1) for d in (d_obs, d_wall, d_ag))
         for k, d in ((E_OBSTACLE, d_obs), (E_WALL, d_wall), (E_AGENT, d_ag)):
             out[k * S:(k + 1) * S] = np.minimum(d, c.fov_range) / c.fov_range
 

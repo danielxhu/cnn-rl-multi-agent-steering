@@ -76,7 +76,9 @@ synchronously. Facts the design depends on (read `physics.py`):
 | `greedy_action(sim, i)` is the null model | bottom of file |
 
 Observation layout (51): `[0:16]` obstacle, `[16:32]` wall, `[32:48]` agent
-sector distances (normalised by `fov_range`), `[48]` goal distance,
+sector distances (normalised by `fov_range`; each read by one ray through the
+sector centre — `Config.rays_per_sector = 1`, so an agent beyond ≈ 16.7 can
+fall between two rays; E2 keeps 1, see §10), `[48]` goal distance,
 `[49]` goal bearing / π, `[50]` speed / `max_speed`.
 
 ### 1.2 Scene sampling
@@ -520,6 +522,10 @@ Same harness style as `sim/tests/run_tests.py`.
 - Agents in a multi-exit scene head for the nearest exit in straight-line
   distance (`RegionSet.nearest_point`); exit choice is not learned
   separately.
+- Sensing is 16 rays, not 16 full sectors (`rays_per_sector = 1`): 5.8 % of
+  agents inside the FOV and range go unseen, all of them beyond 16.7 (13.7 % of
+  those between 16.7 and 22; none within 12). Kept for E2 (decided 2026-10-20);
+  E5's dense crowds should compare `rays_per_sector = 2`, which sees all.
 - The 50 M budget is a guess until the `--dev` run measures throughput.
 - `sim/` greedy numbers in the README use generator headings and 4 agents;
   the E2 table recomputes greedy on the E2 suites (random headings).

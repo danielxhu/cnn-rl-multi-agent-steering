@@ -274,6 +274,25 @@ def test_grazing_pass_is_a_collision():
 
 
 @test
+def test_rays_per_sector():
+    # default: one ray through each sector centre, exactly as before the switch
+    sim = _two_agent_sim((40.0, 50.0), 0.0, (60.0, 50.0), math.pi)
+    fov, S = math.radians(sim.cfg.fov_deg), sim.cfg.n_sectors
+    centres = [-fov / 2 + (k + 0.5) * fov / S for k in range(S)]
+    assert np.allclose(sim._sector_off, centres)
+    # an agent dead ahead at 20 sits between the two central rays (+-6.9 deg)
+    assert (sim.observe_one(0)[32:48] == 1.0).all(), "K = 1 should miss it"
+    cfg = Config()
+    cfg.rays_per_sector = 2
+    sim2 = Simulator(sim.scene, cfg)
+    sim2.reset()
+    o = sim2.observe_one(0)
+    assert o[32:48].min() < 1.0, "K = 2 should see it"
+    assert 18.0 < o[32:48].min() * cfg.fov_range < 18.5     # a ray 3.4 deg off-centre: just over 20 - radius
+    assert o.shape == sim.observe_one(0).shape
+
+
+@test
 def test_label_map_contains_every_class():
     cfg = Config()
     rng = np.random.default_rng(7)
