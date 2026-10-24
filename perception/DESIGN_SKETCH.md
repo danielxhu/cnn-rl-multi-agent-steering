@@ -737,6 +737,135 @@ after the change (images, labels, JSON; Linux-x86_64, numpy 2.5.4, OpenCV
   `test_letter_gate_keeps_box_with_agents`; the sketch checks run on sketch6
   too, with the gate fed ground-truth letter heat).
 
+**Sketch v7: context, slanted lines, agents outside boxes (20 Oct 2026, §11)**
+
+*Kept as specified.* `ModelConfig.context` ("none" default, "dilated": three
+3 × 3 conv → BN → ReLU, dilation 2, 4, 8, width 192, added to the bottleneck;
+the last BN's weight starts at 0); `--init` tolerates a missing `context.*` as
+it tolerates a missing `letter.*`, any other mismatch still raises.
+`SKETCH_V7` / `--style sketch7`, `MIXES["mixed5"]` = the `mixed4` families,
+every new option off by default and drawing no random numbers when off; the
+datasets, seeds and probes of §11.4; `wall_on_box_tol` / `stub_len` with
+`diagnostics["walls_on_boxes"]` / `["wall_stubs"]`; `run_v7.py`. Old models and
+styles are unchanged: every earlier hash set is identical, the v6 model in
+`models/sketch6` parses the 9 drawings byte-identically (JSON, overlay, clean)
+with the old and the new code, and oracle extraction with the default, lines,
+v5 and v6 settings is byte-identical (360 / 360 parses, incl. sketch7 labels).
+
+*Changed or added, with reasons:*
+
+- **No ReLU after the context block's last BN.** §11.1 has three conv → BN →
+  ReLU layers with the last BN's weight at 0. Then the last ReLU's input is
+  exactly 0, where its gradient is 0: that weight never receives a gradient
+  and the block stays the identity for good (measured: gradient 0.0; a
+  1-epoch fine-tune gave the v6-shaped run's metrics to the last digit). The
+  block is conv → BN → ReLU, conv → BN → ReLU, conv → BN, added to its input
+  (the usual residual form); it is still exactly the identity at the start,
+  and the weight moves (mean |γ| 0.001 after one 150-scene epoch).
+  `test_context_block_identity` checks the gradient too.
+
+- **Context block size.** +997 k parameters (1.086 M → 2.083 M; checkpoint
+  4.3 → 8.2 MB), as §11.1 estimated. CPU (4 threads) forward at 256: batch 1
+  58 → 65 ms (+12 %), batch 8 714 → 744 ms (+4 %); forward activations at batch
+  8 grow 1171 → 1225 MB (+5 %), so batch 8 at 256 stays on the 8 GB GTX 1070
+  (v6 trains there at batch 8). A 1-epoch CPU smoke run (150 scenes) took
+  41 s with the block and 40 s without. The GPU epoch time is for
+  the training machine to report.
+- **Agent placement** is two options, `agent_mixed_prob` / `agent_free_prob`
+  (the rest is "boxes"), not one `agent_placement` string: `LayoutOptions` is a
+  probability per case like the v6 options. "mixed" keeps 30–70 % of the agents
+  in their start boxes and removes start boxes left empty; "free" writes the
+  scene in the several-box form with `starts: []`. Every exit is reachable from
+  an agent (`reachability.regions_connected` counts agents outside every start
+  box as sources). `mixed5_free` is 0.5 / 0.5.
+- **Slanted free-form walls**: `_random_walls` takes `slant_prob` (0.25 as
+  before when unset, 0.4 in `mixed5`, 1.0 in `mixed5_tilt`). The sampler draws
+  0.40 of its walls slanted; in whole `walls*` scenes the slits and long lines
+  (axis-parallel) dilute that, and 0.67 of free-form scenes have at least one
+  slanted wall.
+- **Tilted room walls**: a side tilts by U(5°, 25°) by sliding one of its ends
+  along the side meeting there, so that side stays straight and the room
+  closed (one or two sides; frame sides keep their ends on the frame);
+  `boxrooms` tilts outward only and keeps the rooms apart; `rooms*` tilt a
+  divider about its middle and shrink the rooms by the swept width. Realised
+  in 0.29 of `mixed5` room scenes (0.3 asked; a tilt that breaks spacing
+  or solvability is dropped) and 20 / 36 in `mixed5_tilt`, which also sets
+  `room_tilt_prob` 1 (the probe is "everything tilted"; §11.4 named only
+  `slant_prob`).
+- **Tilted boxes**: the drawn quad is rotated about its centre and *scaled*
+  0.8–1.2 (the first of 1, 0.95, 1.05, … that fits) rather than only shrunk:
+  shrinking alone cannot keep a box's agents inside, and shrinking to the
+  original footprint turned long boxes into strips. The rotated quad must hold
+  its agents with their drawn radii, keep every other agent outside (else a
+  tilted exit would swallow an agent next to it), and stay 0.3 units off
+  walls, obstacles and other boxes; otherwise the angle is halved, and below
+  3° the box stays upright. Realised: 0.23 of boxes in sketch7 (0.4 asked),
+  48 % in the probe (`--style sketch7tilt` = box_tilt_prob 1 on
+  `mixed5_tilt`), median |angle| 6–7°: boxes packed with agents or drawn
+  against a wall cannot tilt far. The drawn agent size is drawn before the
+  boxes, only when `box_tilt_prob` > 0, so earlier styles' random streams are
+  unchanged.
+- **Sides past the corners**: one or two sides of the box run on.
+- **Glyphs**: the "edge" tail starts on the circle at the heading; "through"
+  starts U(0.9, 1.2) radii behind the centre. The JSON centre and heading are
+  as before.
+- **Big letters** are max(U(0.6, 0.85) × the shorter side, the 2.5-unit
+  floor), placed inside the drawn quad (half a letter height in), as are the
+  letters of tilted boxes.
+- **Touching**: an extra obstacle placed touching a box or a wall
+  (`hard["touch"]`). Agents touching their box's sides from inside are not a
+  separate option: drawn agents (0.6–2× since v4) already reach the sides.
+- **Long lines** are placed after the boxes near walls have moved (they were
+  placed before, and a box sliding to a wall could leave its line 50 units
+  away). In `mixed5_lines` 147 / 150 scenes get one; it is next to a box in
+  every scene but the "free" ones, where its start box is removed with the
+  others.
+- **Extractor, wall on a box**: outside the box the tolerance grows by half
+  the wall width (1.5 units in lines mode): a wall drawn over a side hides
+  the side, so the parsed box ends at the wall's inner edge, half a width from
+  its centre line (end to end on rendered labels the side wall sat 1.66 units
+  off the parsed box with 1.5). Inside a box the tolerance is as given; stubs
+  touch within `wall_on_box_tol` (1 unit when it is 0). Boxes are the parsed
+  starts + exits (pair members in pairs mode); the frame is never dropped.
+- **Extractor, slanted walls**: `line_axis_deg` was not the cause. Zhang–Suen
+  leaves staircase pixels on a slanted line that count as junctions, so the
+  skeleton broke into pieces that were snapped to the axis separately. New
+  option `line_axis_dev` (0 = the old pipeline, v7 2.0 units): staircase
+  pixels whose neighbours stay connected without them are pruned, consecutive
+  pieces of a branch within 12° are joined, collinear pieces are merged
+  before snapping, and a wall is snapped to the axis only if its ends move
+  ≤ `line_axis_dev`. A wall drawn at 8° / 15° / 22° in generated sketch7 labels
+  (20 drawings each, at 512 and 256) breaks in 0 / 0 / 0 of 40 parses (old
+  pipeline 39 / 9 / 11). `--line-axis-dev` in train / evaluate / predict like
+  the other v7 flags; `run_v7.py` passes 2.
+- **`region_set_ok` with no true starts** needed no change: an empty true set
+  matches an empty parsed set (`test_agents_without_start_box`).
+- **`run_v7.py`** also evaluates v6 on the earlier sets its own run did not
+  (`sketch6_on_earlier`), writes `results/sketch7/regression.md` (v7 − v6
+  `scene_usable` per earlier set, against the 0.5-point rule), skips earlier
+  sets missing from the data root, parses with v6 any drawing v6 has no clean
+  rendering of (the meeting drawings, into `drawings_v7/v6`), copies the model
+  to `models/sketch7` for `demo.py` and pushes it with the results; `--batch`,
+  `--models` added. `test_drawings.py` and `demo.py` take the newest model
+  that exists (v7, v6, v5).
+- **Tests.** `test_sketch_instance_targets_align`: for edge / through glyphs
+  (no ink at the centre) the heat peak must lie inside the drawn ring.
+  `test_extract_on_sketch_labels` skips the box-set check for a start box
+  ≥ 75 % covered by agent ink (one scene of the 21 sketch7 ones: seven agents
+  drawn over a 22 × 8.6 box; the v6 style fails the same scene in 2 of 20
+  redraws, so it is not a v7 regression). `HASH_SETS` gain sketch6,
+  sketch6swap and render_mixed4 (recorded with the code before v7).
+- Checks on 140 sketch7 scenes drawn like `train_sketch7` (592 agents):
+  oracle extraction (ground-truth labels, heat and letter heat; gate, exits,
+  `min_box_side` 3, the three v7 filters) gets `region_set_ok` 140 / 140 at 512
+  and 139 / 140 at 256 and every agent with no extra; JSON ↔ drawing passes in
+  135 / 140 (the same 140 scenes drawn as sketch6: 135 / 140).
+- Tests: `sim` 28 (+ `test_mixed5_cases`, `test_scene_without_starts`; v7 and
+  v7-tilt in the determinism test; 23 hash sets); `perception` 32 (+
+  `test_context_block_identity`, `test_wall_on_box_dropped`,
+  `test_slanted_wall_one_segment`, `test_agents_without_start_box`; the
+  sketch checks run on sketch7 too).
+
 ---
 
 ## 9. Sketch v5: rooms, close agents, multiple exits (spec, 15 Oct 2026; **built** 16 Oct, deviations in §8)
@@ -1060,7 +1189,7 @@ above are gone or reduced to "box dropped" (never "box invented").
 
 ---
 
-## 11. Sketch v7: context, slanted lines, agents outside boxes (spec, 19 Oct 2026)
+## 11. Sketch v7: context, slanted lines, agents outside boxes (spec, 19 Oct 2026; **built** 20 Oct, deviations in §8)
 
 **Why.** Five drawings parsed live with v6 at the advisor meeting
 (`results/drawings_meeting/`): one fully right, two nearly, two wrong.

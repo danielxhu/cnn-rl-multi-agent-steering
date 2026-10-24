@@ -13,6 +13,13 @@ Heads on the final (B, base_ch, S, S) features:
     letter: 1×1 conv → (B, 2, S, S) sigmoid = S / G letter heat, optional
             (sketch v6, DESIGN_SKETCH §10.3; + 50 parameters at unet24)
 
+Optional context block (``context="dilated"``, sketch v7, DESIGN_SKETCH §11.1)
+on the deepest features: three 3×3 conv → BN → ReLU with dilation 2, 4, 8,
+added to its input. The last BN's weight starts at 0, so the block is the
+identity at initialisation and a model without it fine-tunes from exactly its
+own behaviour. Receptive field + 2·(2+4+8)·2^(levels-1) px (224 at unet24x4,
+the whole 256 image).
+
 ``forward`` returns a dict so the training loop and the extractor are
 indifferent to the variant.  Parameter counts (DESIGN.md §3.1):
 unet24x4 1.086 M, unet24x5 4.37 M, unet16x4 0.48 M; the instance head adds 75.
@@ -40,7 +47,8 @@ def _block(i: int, o: int) -> nn.Sequential:
 
 
 class UNet(nn.Module):
-    def __init__(self, base_ch=24, levels=4, n_classes=6, instance_head=False, letter_head=False):
+    def __init__(self, base_ch=24, levels=4, n_classes=6, instance_head=False, letter_head=False,
+                 context="none"):
         super().__init__()
         if levels < 2:
             raise ValueError("a U-Net needs at least two levels")
@@ -71,6 +79,11 @@ class UNet(nn.Module):
         self.letter = nn.Conv2d(widths[0], 2, 1) if letter_head else None
         if self.letter is not None:
             nn.init.constant_(self.letter.bias, -2.19)
+        # created after everything else for the same reason
+        if context not in ("none", "dilated"):
+            raise ValueError(f"unknown context {context!r}; choose 'none' or 'dilated'")
+        self.context_kind = context
+        self.context = _context_block(widths[-1]) if context == "dilated" else None
 
     @property
     def divisor(self) -> int:
@@ -83,6 +96,8 @@ class UNet(nn.Module):
         for k, block in enumerate(self.enc):
             x = block(x if k == 0 else self.pool(x))
             skips.append(x)
+        if self.context is not None:                 # residual: identity at initialisation
+            x = x + self.context(x)
         for up, dec, skip in zip(self.up, self.dec, reversed(skips[:-1])):
             x = dec(torch.cat([up(x), skip], 1))
         out = {"seg": self.seg(x)}
@@ -95,22 +110,37 @@ class UNet(nn.Module):
         return out
 
 
+def _context_block(ch: int) -> nn.Sequential:
+    """Three dilated 3×3 conv → BN (dilation 2, 4, 8), ReLU between them; the last
+    BN's weight is 0, so the block adds 0. No ReLU after the last BN: there its
+    input would be exactly 0, where ReLU passes no gradient, and the zero weight
+    would never move (the block would stay the identity for good)."""
+    layers = []
+    for d in (2, 4, 8):
+        layers += [nn.Conv2d(ch, ch, 3, padding=d, dilation=d), nn.BatchNorm2d(ch), nn.ReLU(inplace=True)]
+    layers = layers[:-1]
+    nn.init.zeros_(layers[-1].weight)                # BN gamma 0 (its beta is 0): the block adds 0
+    return nn.Sequential(*layers)
+
+
 def build_model(mcfg) -> UNet:
     if mcfg.arch not in ARCHS:
         raise ValueError(f"unknown arch {mcfg.arch!r}; choose from {sorted(ARCHS)}")
     return UNet(n_classes=mcfg.n_classes, instance_head=mcfg.instance_head,
-                letter_head=getattr(mcfg, "letter_head", False), **ARCHS[mcfg.arch])
+                letter_head=getattr(mcfg, "letter_head", False),
+                context=getattr(mcfg, "context", "none") or "none", **ARCHS[mcfg.arch])
 
 
 def load_init_weights(model: nn.Module, state: dict) -> list:
-    """Load a checkpoint's weights for fine-tuning (``--init``). The only mismatch
-    tolerated is a letter head the checkpoint lacks (DESIGN_SKETCH §10.3): it keeps
-    its initialisation. Anything else missing, unexpected or of another shape
-    raises. Returns the names left at their initialisation."""
+    """Load a checkpoint's weights for fine-tuning (``--init``). The only mismatches
+    tolerated are a letter head (DESIGN_SKETCH §10.3) or a context block (§11.1)
+    the checkpoint lacks: they keep their initialisation. Anything else missing,
+    unexpected or of another shape raises. Returns the names left at their
+    initialisation."""
     own = model.state_dict()
     missing = [k for k in own if k not in state]
     unexpected = [k for k in state if k not in own]
-    if unexpected or any(not k.startswith("letter.") for k in missing):
+    if unexpected or any(not k.startswith(("letter.", "context.")) for k in missing):
         raise RuntimeError(f"checkpoint does not fit the model: missing {missing}, unexpected {unexpected}")
     model.load_state_dict(state, strict=not missing)   # a shape mismatch raises either way
     return missing

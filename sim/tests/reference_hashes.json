@@ -82,6 +82,18 @@
    "json": "5bed7331d841776daba48c68914adab3ee4f85e251999a6edb94da9ef953d3ba",
    "pixels": "576205326bebbdb60d5ec0a6f7ab032188831272e50aeb7a941c62c3ae9238bd"
   },
+  "sketch6": {
+   "json": "d4f0603a000c638bd53164a3f58623599fb2d675ff90bcab01a0fe17a3e2a160",
+   "pixels": "982773a4a7a5503ad5e3e62fa3dd74558eb1ce44ee72eaac393c0aae061850ed"
+  },
+  "sketch6swap": {
+   "json": "e368b7548ba9e63029113142da7c1d2d82f763273deb2c4851efdf58a805bc8a",
+   "pixels": "070584956090dfac33c15bcca90fad9edf799aed994d5b873f6efe8173f11b9c"
+  },
+  "render_mixed4": {
+   "json": "c9822fbef13320aa10569b618f053d133b0fb7944e5234df32401a718e8d402c",
+   "pixels": "d2a26a38bcc9f1596874b7a53d54bd1a660ef0f3369037e6a70712b41383e8b6"
+  },
   "render_mixed_hard_aug3": {
    "json": "fafb2e1c0e6325ce8fac2bcbbe9ca7d5a40de1ab547efa6450f9c1e87368bd7a",
    "pixels": "13156e2ddd7d010ebf16743330a04f320da0b73309f61382864989aaa672b8ec"

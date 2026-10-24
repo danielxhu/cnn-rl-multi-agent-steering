@@ -17,7 +17,9 @@ style (``--style sketch2``) and ``--only '*sketch2'`` makes only them; likewise
 several start / exit boxes, touching agents; DESIGN_SKETCH §9.5), and
 ``*_sketch6`` / ``test_sketch6swap`` (``--style sketch6`` / ``sketch6swap`` on
 ``--layout mixed4``: one width law for every line, hard cases, letters in the
-JSON; DESIGN_SKETCH §10.5).  ``agent_gap``
+JSON; DESIGN_SKETCH §10.5), and ``*_sketch7`` with the probes ``test_sketch7_free``
+/ ``_tilt`` / ``_lines`` (``--style sketch7`` on ``--layout mixed5``: agents
+outside boxes, slanted and tilted lines, tilted boxes; DESIGN_SKETCH §11.4).  ``agent_gap``
 is not a ``generate.py`` flag, so each spacing set gets a one-line JSON config.
 """
 from __future__ import annotations
@@ -38,6 +40,7 @@ BASE = ["--layout", "mixed", "--agents", "1-8", "--obstacles", "0-6"]
 BASE2 = ["--layout", "mixed2", "--agents", "1-8", "--obstacles", "0-6"]   # + free-form layouts
 BASE3 = ["--layout", "mixed3", "--agents", "1-8", "--obstacles", "0-6"]   # + rooms by boxes, several boxes
 BASE4 = ["--layout", "mixed4", "--agents", "1-8", "--obstacles", "0-6"]   # mixed3 + hard cases
+BASE5 = ["--layout", "mixed5", "--agents", "1-8", "--obstacles", "0-6"]   # mixed4 + v7 cases (§11.2)
 AUG = {
     0: [],
     1: ["--jitter-color", "10", "--jitter-line-width", "0.5", "--jitter-background", "8",
@@ -93,6 +96,15 @@ DATASETS = [
     ("test_sketch6", 1000, BASE4 + ["--style", "sketch6", "--seed", "360"]),
     # probe: walls thin, box sides thick (the reverse of v1-v5); a pattern model scores as on test_sketch6
     ("test_sketch6swap", 500, BASE4 + ["--style", "sketch6swap", "--seed", "361"]),
+    # v7: agents outside boxes, slanted walls and tilted rooms, tilted boxes, edge / through
+    # glyphs, big letters, touching obstacles, long lines by boxes (DESIGN_SKETCH §11)
+    ("train_sketch7", 5000, BASE5 + ["--style", "sketch7", "--seed", "170"]),
+    ("val_sketch7", 500, BASE5 + ["--style", "sketch7", "--seed", "270"]),
+    ("test_sketch7", 1000, BASE5 + ["--style", "sketch7", "--seed", "370"]),
+    # probes: agents outside boxes in every scene; every box and wall slanted; a long line by a box
+    ("test_sketch7_free", 500, ["--layout", "mixed5_free"] + BASE5[2:] + ["--style", "sketch7", "--seed", "371"]),
+    ("test_sketch7_tilt", 500, ["--layout", "mixed5_tilt"] + BASE5[2:] + ["--style", "sketch7tilt", "--seed", "372"]),
+    ("test_sketch7_lines", 500, ["--layout", "mixed5_lines"] + BASE5[2:] + ["--style", "sketch7", "--seed", "373"]),
 ]
 SKETCH_COST = 2.0            # a sketch scene costs about twice a rendered one
 

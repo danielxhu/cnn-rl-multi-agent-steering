@@ -1,0 +1,19 @@
+mixed5 over 200 scenes (seed 11, as test_mixed5_cases)
+
+  placement boxes                                124 / 200  = 0.62
+  placement mixed                                 44 / 200  = 0.22
+  placement free                                  32 / 200  = 0.16
+  touching obstacle                               60 / 200  = 0.30
+  long line                                       46 / 200  = 0.23
+  slit                                            61 / 200  = 0.30
+  slanted wall (free-form scenes with >= 1)       37 /  55  = 0.67
+  tilted room wall (room scenes with >= 1)        22 /  77  = 0.29
+
+sketch7 drawing side over the same 200 scenes
+
+  tilted box                                     110 / 477  = 0.23
+  sides past corners                             154 / 477  = 0.32
+  big letter                                     145 / 477  = 0.30
+  glyph centre                                   521 / 940  = 0.55
+  glyph edge                                     274 / 940  = 0.29
+  glyph through                                  145 / 940  = 0.15

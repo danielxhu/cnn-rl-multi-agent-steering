@@ -101,7 +101,13 @@ Every model outputs 6-class logits. `--letter-head` (sketch v6) adds two
 channels, S and G letter heat (+50 parameters). `--instance-head` adds three channels
 (agent-centre heatmap, cos θ, sin θ) on the same features (+75 parameters);
 with it the extractor reads agent poses from the heatmap instead of the
-label map. Losses: class-weighted cross-entropy (+ optional Dice), CenterNet
+label map. `--context dilated` (sketch v7) adds a residual block of three
+dilated 3 × 3 convolutions (dilation 2, 4, 8) at the bottleneck, so a pixel
+sees the whole 256 image (+ 0.997 M parameters on `unet24x4`, 2.08 M in all;
+CPU forward + 4–12 %; batch 8 at 256 still fits 8 GB). Its last BN weight
+starts at zero (and no ReLU follows it, so it still learns): a model
+`--init`-ed from a checkpoint without the block gives the same outputs at the
+start. Losses: class-weighted cross-entropy (+ optional Dice), CenterNet
 focal loss on the heatmap, L1 on the heading vector inside agent disks.
 AdamW, cosine schedule, fp32 (the training GPU has no tensor cores).
 
@@ -267,14 +273,31 @@ python predict.py --ckpt runs/sketch_s256_inst_s0/ckpt_best.pt --image IMG_0042.
   `evaluate.py` switches it off by itself on rendered sets (no letters drawn).
   `train.py --init` from a model without a letter head (v5) loads everything
   else and starts the new head fresh.
-- **One command per version.** `python scripts/run_v6.py` (and `run_v5.py`
-  before it) runs datasets → training → `--tune-extract` → evaluations →
-  `aggregate.py` → the real drawings → `git push`, each step skipped when its
-  output exists, so it resumes after a stop; `--dry-run` prints the commands,
-  `--no-push` skips git. `python scripts/test_drawings.py` puts new photos in
-  `results/drawings_v5/input` through the newest run (v6 once it exists, else
-  v5) and pushes the parses; with v6, `compare_<name>.png` is photo | v5 clean |
-  v6 overlay | v6 clean.
+- **Style v7** (`--style sketch7`, sets `*_sketch7` and the probes
+  `test_sketch7_free` / `_tilt` / `_lines` on `--layout mixed5`, DESIGN_SKETCH
+  §11) follows the advisor's drawings: agents drawn outside any box (in 20 % of
+  scenes some, in 20 % all of them, and then there is no start box at all),
+  slanted free-form walls and tilted room walls, boxes drawn tilted (the JSON
+  keeps the axis-aligned box the simulator uses), box sides run past the
+  corners, agent tails drawn from the circle's edge or through it, big
+  letters, obstacles touching boxes or walls, and long walls next to boxes.
+  Extractor options (all off by default): `--wall-on-box-tol 1.5` drops a wall
+  piece lying along a box side, `--stub-len 3` drops a short stub touching a
+  box (`diagnostics["walls_on_boxes"]` / `["wall_stubs"]`), and
+  `--line-axis-dev 2` keeps a slanted wall one segment (a wall is snapped to
+  the axis only if its ends move ≤ 2 units).
+- **One command per version.** `python scripts/run_v7.py` (and `run_v6.py`,
+  `run_v5.py` before it) runs datasets → training → `--tune-extract` →
+  evaluations → `aggregate.py` → the real drawings → `git push`, each step
+  skipped when its output exists, so it resumes after a stop; `--dry-run`
+  prints the commands, `--no-push` skips git. v7 also writes
+  `results/sketch7/regression.md` (v7 against v6 on every earlier test set)
+  and copies the model to `models/sketch7`. `python scripts/test_drawings.py`
+  puts new photos in `results/drawings_v5/input` through the newest run (v7,
+  else v6, else v5) and pushes the parses; with v6, `compare_<name>.png` is
+  photo | v5 clean | v6 overlay | v6 clean, with v7 photo | v6 clean | v7
+  overlay | v7 clean. `python scripts/demo.py photo.jpg` uses the newest model
+  in `models/` (`sketch7`, else `sketch6`).
 - Look at a few generated scenes before a long run:
   `python ../sim/generate.py --n 7 --style sketch --preview 7 --out data/preview_sketch`.
 
@@ -292,6 +315,7 @@ python predict.py --ckpt runs/sketch_s256_inst_s0/ckpt_best.pt --image IMG_0042.
 | continue an interrupted run | `train.py ... --resume` (same `--out`) |
 | tune extraction thresholds | `evaluate.py --ckpt ... --data data/val --tune-extract` (a letter-head run with the gate also tunes `letter_thresh`) |
 | letter gate on / off at test time | `evaluate.py` / `predict.py` `--letter-gate`, `--no-letter-gate`, `--letter-thresh 0.3`, `--min-box-side 3` |
+| box sides / stubs read as walls, slanted walls broken | `evaluate.py` / `predict.py` `--wall-on-box-tol 1.5 --stub-len 3 --line-axis-dev 2` (0 = off) |
 | a subset of the sweep | `sweep.py --only "s128_*"` |
 | a smoke dataset | `scripts/make_datasets.py --n-scale 0.01` |
 | run on CPU only | `--device cpu` |

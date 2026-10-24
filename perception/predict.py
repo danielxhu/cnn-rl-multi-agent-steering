@@ -164,6 +164,8 @@ def main(argv=None):
     p.add_argument("--heat-nms-factor", type=float, default=None, help="override the run's")
     from runconfig import add_letter_flags
     add_letter_flags(p)
+    from runconfig import add_v7_flags
+    add_v7_flags(p)
     a = p.parse_args(argv)
     if not a.image and not a.dir:
         p.error("give --image or --dir")
@@ -175,7 +177,7 @@ def main(argv=None):
     if a.region_by_agents:
         pr.ecfg = replace(pr.ecfg, region_by_agents=True)
     for k in ("goal_mode", "heat_thresh", "heat_nms_factor", "letter_gate", "letter_thresh", "min_box_side",
-              "letter_suppress_agents"):
+              "letter_suppress_agents", "wall_on_box_tol", "stub_len", "line_axis_dev"):
         if getattr(a, k) is not None:
             pr.ecfg = replace(pr.ecfg, **{k: getattr(a, k)})
     if pr.ecfg.letter_gate and not getattr(pr.cfg.model, "letter_head", False):

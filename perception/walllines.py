@@ -27,7 +27,12 @@ Steps (all thresholds in world units, in ``ExtractConfig``):
    obstacle was drawn over; ends near another wall are moved onto the
    intersection (corners, T junctions, the overshoot of a hand-drawn corner);
    free ends near the world edge are extended to it; short leftovers are
-   dropped.
+   dropped. With ``line_axis_dev`` > 0 (sketch v7, slanted walls) the pieces
+   are merged *before* any snapping, and a merged line is made axis-parallel
+   only when that moves its ends by at most ``line_axis_dev``: a long wall
+   drawn at 5-25° stays one slanted segment instead of an axis-parallel piece
+   plus a slanted one (a false door), a wobbly axis-parallel wall still snaps.
+   0 (default) is the pipeline of every earlier run.
 
 numpy and cv2 only. Pixel ↔ world as in ``extract.py``.
 
@@ -94,6 +99,37 @@ def thin(mask: np.ndarray) -> np.ndarray:
 
 
 _NB = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]   # 4-neighbours first
+
+
+def prune_stairs(skel: np.ndarray) -> np.ndarray:
+    """Remove redundant skeleton pixels: one whose (two or more) neighbours stay
+    8-connected among themselves without it. Zhang-Suen leaves such staircase
+    corners on slanted lines; each looks like a junction to ``branches``, which
+    cuts the line there (v7: a slanted wall came out as many short pieces). True
+    junctions and every axis-parallel line are unchanged."""
+    s = skel.astype(bool).copy()
+    H, W = s.shape
+    changed = True
+    while changed:
+        changed = False
+        nb = cv2.filter2D(s.astype(np.uint8), -1, np.ones((3, 3), np.float32), borderType=cv2.BORDER_CONSTANT)
+        for y, x in np.argwhere(s & (nb >= 3)):        # the pixel itself + >= 2 neighbours
+            if y == 0 or x == 0 or y == H - 1 or x == W - 1 or not s[y, x]:
+                continue
+            ring = [(y + dy, x + dx) for dy, dx in _NB if s[y + dy, x + dx]]
+            if len(ring) < 2:
+                continue
+            seen, stack = {ring[0]}, [ring[0]]          # are the neighbours one 8-connected group?
+            while stack:
+                cy, cx = stack.pop()
+                for q in ring:
+                    if q not in seen and max(abs(q[0] - cy), abs(q[1] - cx)) == 1:
+                        seen.add(q)
+                        stack.append(q)
+            if len(seen) == len(ring):
+                s[y, x] = False
+                changed = True
+    return s
 
 
 def branches(skel: np.ndarray, min_px: int) -> list:
@@ -184,6 +220,35 @@ def _axis_snap(s, max_deg):
     elif ang >= 90 - max_deg:
         s[:, 0] = s[:, 0].mean()
     return s
+
+
+def _axis_snap_dev(s, max_deg, dev_px):
+    """`_axis_snap`, but only when snapping moves the segment's ends by <= dev_px
+    (a near-axis line too long and too slanted for that is a slanted wall)."""
+    d = _dir(s)
+    ang = math.degrees(math.atan2(abs(d[1]), abs(d[0])))
+    off = min(ang, 90 - ang)
+    if off <= max_deg and 0.5 * _length(s) * math.sin(math.radians(off)) <= dev_px:
+        return _axis_snap(s, max_deg)
+    return s
+
+
+def _join_gentle(path, runs, max_deg) -> list:
+    """Consecutive Douglas-Peucker pieces of one skeleton branch joined while each
+    turns by at most `max_deg` from the line fitted so far (v7): a slanted wall
+    the pen bent by a few units stays one line, where merging the separate fits
+    would need them within line_tol of one line. A corner (90°) is never joined."""
+    out = []
+    for i, j in runs:
+        if out:
+            i0, j0 = out[-1]
+            a = np.array(_fit(path[i0:j0 + 1])) if j0 - i0 >= 1 else None
+            b = np.array(_fit(path[i:j + 1])) if j - i >= 1 else None
+            if a is not None and b is not None and _angle(a, b) <= max_deg:
+                out[-1] = (i0, j)
+                continue
+        out.append((i, j))
+    return out
 
 
 def _covered(labels_ok, a, b, max_gap_px) -> bool:
@@ -369,9 +434,15 @@ def wall_lines(wall_mask, obst_mask, world: dict, ecfg) -> list:
         b = border_px
         skel[:b], skel[-b:], skel[:, :b], skel[:, -b:] = 0, 0, 0, 0
         tol = max(1.0, ecfg.line_tol * scale)
+        chain = getattr(ecfg, "line_axis_dev", 0.0) > 0
+        if chain:                                      # v7: slanted lines stay one branch
+            skel = prune_stairs(skel)
         for path in branches(skel, max(3, int(ecfg.line_min_len * scale / 2))):
             idx = _rdp(path, tol)
-            for i, j in zip(idx[:-1], idx[1:]):
+            runs = [(i, j) for i, j in zip(idx[:-1], idx[1:])]
+            if chain:                                  # v7: one stroke bending gently is one wall
+                runs = _join_gentle(path, runs, 12.0)
+            for i, j in runs:
                 if j - i >= 2:
                     segs.append(np.array(_fit(path[i:j + 1])))
 
@@ -382,14 +453,20 @@ def wall_lines(wall_mask, obst_mask, world: dict, ecfg) -> list:
         bridge = cv2.dilate((rim | obst).astype(np.uint8),
                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))) > 0
         join, over = ecfg.line_join * scale, ecfg.line_overshoot * scale
-        segs = [_axis_snap(s, ecfg.line_axis_deg) for s in segs]
         short, bgap = 3 * join, max(2.0, 0.5 * scale)
+        dev = getattr(ecfg, "line_axis_dev", 0.0) * scale
+        if dev > 0:                                    # v7: merge first, snap only near-exact axes
+            snap = lambda s: _axis_snap_dev(s, ecfg.line_axis_deg, dev)  # noqa: E731
+            segs = merge_collinear(segs, tol, join, bridge, short, bgap)
+        else:
+            snap = lambda s: _axis_snap(s, ecfg.line_axis_deg)  # noqa: E731
+        segs = [snap(s) for s in segs]
         segs = merge_collinear(segs, tol, join, bridge, short, bgap)
-        segs = [_axis_snap(s, ecfg.line_axis_deg) for s in segs]
+        segs = [snap(s) for s in segs]
         segs = merge_collinear(segs, tol, join, bridge, short, bgap)
         segs = snap_junctions(segs, join, over)
         segs = extend_to_border(segs, S, ecfg.line_border_reach * scale, bridge, bgap, tol)
-        segs = [_axis_snap(s, ecfg.line_axis_deg) for s in segs]      # exact again after snapping
+        segs = [snap(s) for s in segs]                                 # exact again after snapping
         segs = [s for s in segs if _length(s) >= ecfg.line_min_len * scale
                 and not _near_border(s, S, border_px)]
 

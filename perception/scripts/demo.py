@@ -1,6 +1,6 @@
 """Live demo: one photo of a drawing -> the parsed scene, shown side by side.
 
-    python scripts/demo.py photo.jpg                 # model in models/sketch6
+    python scripts/demo.py photo.jpg                 # the newest model in models/ (sketch7, sketch6)
     python scripts/demo.py photo.jpg --model E:\\cnn-runs\\sketch6_ft_seed0
 
 Runs ``predict.py`` (with ``--photo``, retried without it when the corner
@@ -23,14 +23,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_v5 import HERE, PY, side_by_side  # noqa: E402
 
 
+MODELS = ["sketch7", "sketch6"]       # newest first
+
+
+def default_model() -> Path:
+    """The newest model folder in models/ that has a checkpoint (v7, else v6)."""
+    return next((HERE / "models" / m for m in MODELS if (HERE / "models" / m / "ckpt_best.pt").exists()),
+                HERE / "models" / MODELS[-1])
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("photo")
-    p.add_argument("--model", default=str(HERE / "models" / "sketch6"))
+    p.add_argument("--model", default=None, help="default: the newest in models/ (sketch7, else sketch6)")
     p.add_argument("--out", default=str(HERE / "demo"))
     p.add_argument("--no-open", action="store_true")
     a = p.parse_args(argv)
-    photo, model, out = Path(a.photo).resolve(), Path(a.model), Path(a.out).resolve()
+    photo, model, out = Path(a.photo).resolve(), Path(a.model or default_model()), Path(a.out).resolve()
     if photo.suffix.lower() in (".heic", ".heif"):           # iPhone photos: PIL cannot read them
         out.mkdir(parents=True, exist_ok=True)
         jpg = out / (photo.stem + ".jpg")
