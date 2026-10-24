@@ -39,6 +39,10 @@ Invariants:
   behaviour.
 - Heat-mode peaks are suppressed within ``heat_nms_factor`` (default:
   ``nms_factor``) nominal radii; the ring vote always uses ``nms_factor``.
+- Sketch v7 (DESIGN_SKETCH §11.3), off by default: ``wall_on_box_tol`` drops
+  wall pieces lying along a kept box's side and ``stub_len`` short pieces
+  touching a box (``drop_walls_on_boxes``); ``line_axis_dev`` keeps slanted
+  walls whole (``walllines``). A scene may have no start box at all.
 - Sketch v6 (DESIGN_SKETCH §10.4), all off by default (v5 behaviour):
   ``min_box_side`` drops boxes with a shorter side below it
   (``diagnostics["dropped_thin_boxes"]``). ``letter_gate`` needs the letter
@@ -68,7 +72,7 @@ import numpy as np
 import _paths  # noqa: F401
 from config import C_AGENT, C_GOAL, C_OBST, C_START, C_WALL, Config, StyleConfig
 from runconfig import ExtractConfig
-from scene import Agent, Obstacle, Region, Scene
+from scene import Agent, Obstacle, Region, Scene, boundary_walls
 from targets import px_to_world, world_to_px
 from walllines import wall_lines
 
@@ -817,6 +821,10 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig(), letter=Non
         walls = extract_walls(wall_mask, scale, world, ecfg)
     else:
         raise ValueError(f"unknown wall_mode {ecfg.wall_mode!r}")
+    if ecfg.wall_on_box_tol > 0 or ecfg.stub_len > 0:   # v7: box sides and stubs are not walls
+        boxes = (starts + goals) if ecfg.goal_mode == "exits" else [r for pr in pairs for r in pr]
+        half = 0.5 * float(world["wall_thickness"]) if ecfg.wall_mode == "lines" else 0.0
+        walls = drop_walls_on_boxes(walls, boxes, ecfg, diag, keep=set(boundary_walls(W)), half=half)
 
     # --- assemble -------------------------------------------------------
     if ecfg.goal_mode == "exits":                       # any exit counts: no per-agent goals
@@ -836,6 +844,58 @@ def extract(labels, world, heat=None, dir=None, ecfg=ExtractConfig(), letter=Non
                   start_region=pairs[0][0], goal_region=pairs[0][1],
                   layout="parsed", groups=list(pairs))
     return Parsed(scene=scene, size=S, world=_parsed_world(world, S, ecfg), diagnostics=diag)
+
+
+def _border_dist(p, b) -> float:
+    """Distance from a point to a box's border (inside or outside)."""
+    if b.contains(p):
+        return min(p[0] - b.x0, b.x1 - p[0], p[1] - b.y0, b.y1 - p[1])
+    return b.distance_to(p)
+
+
+def drop_walls_on_boxes(walls, boxes, ecfg, diag, keep=frozenset(), half=0.0) -> list:
+    """Sketch v7 (DESIGN_SKETCH §11.3): drop wall pieces that are a box's own
+    side, and stubs on boxes. A piece lies along a box when ≥ 70 % of it is
+    within ``wall_on_box_tol`` of the box's border and it is ≤ 15° from the
+    nearest side's axis (``diagnostics["walls_on_boxes"]``); a piece shorter
+    than ``stub_len`` that comes within ``wall_on_box_tol`` (1 unit when that is
+    0) of a box is dropped too (``diagnostics["wall_stubs"]``). Walls in `keep`
+    (the world boundary) always stay. Outside a box the tolerance grows by
+    `half` (the wall's half width): a wall drawn over a side hides it, so the
+    parsed box ends at the wall's inner edge, half a width from its centre line."""
+    tol = ecfg.wall_on_box_tol
+    touch = tol if tol > 0 else 1.0
+    out, on, stubs = [], 0, 0
+    for seg in walls:
+        if seg in keep or not boxes:
+            out.append(seg)
+            continue
+        (ax, ay), (bx, by) = seg
+        L = math.hypot(bx - ax, by - ay)
+        n = max(2, int(L / 0.5) + 1)
+        pts = [(ax + (bx - ax) * t, ay + (by - ay) * t) for t in np.linspace(0, 1, n)]
+        ang = math.degrees(math.atan2(abs(by - ay), abs(bx - ax)))       # 0 = horizontal
+        drop = False
+        for b in boxes:
+            if tol > 0:
+                near = [_border_dist(p, b) <= tol + (0.0 if b.contains(p) else half) for p in pts]
+                if np.mean(near) >= 0.7:
+                    # the side it hugs: horizontal when its points sit at the box's top / bottom
+                    horiz = np.mean([min(abs(p[1] - b.y0), abs(p[1] - b.y1)) <= min(abs(p[0] - b.x0), abs(p[0] - b.x1))
+                                     for p, ok in zip(pts, near) if ok]) >= 0.5
+                    if (ang if horiz else 90 - ang) <= 15.0:
+                        drop = True
+                        on += 1
+                        break
+            if ecfg.stub_len > 0 and L < ecfg.stub_len and min(_border_dist(p, b) for p in pts) <= touch:
+                drop = True
+                stubs += 1
+                break
+        if not drop:
+            out.append(seg)
+    diag["walls_on_boxes"] = on
+    diag["wall_stubs"] = stubs
+    return out
 
 
 def _parsed_world(world, S, ecfg) -> dict:

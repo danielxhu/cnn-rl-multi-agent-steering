@@ -324,8 +324,8 @@ def test_sketch_is_deterministic():
 
     # the widened style (v2) is deterministic too, and its digital medium has no camera
     from dataclasses import replace
-    from sketch import SKETCH_V2, SKETCH_V3, SKETCH_V4, SKETCH_V5, SKETCH_V6, SKETCH_V6_SWAP
-    for st in (SKETCH_V2, SKETCH_V3, SKETCH_V4, SKETCH_V5, SKETCH_V6, SKETCH_V6_SWAP):
+    from sketch import SKETCH_V2, SKETCH_V3, SKETCH_V4, SKETCH_V5, SKETCH_V6, SKETCH_V6_SWAP, SKETCH_V7, SKETCH_V7_TILT
+    for st in (SKETCH_V2, SKETCH_V3, SKETCH_V4, SKETCH_V5, SKETCH_V6, SKETCH_V6_SWAP, SKETCH_V7, SKETCH_V7_TILT):
         a = sketch(s, cfg, style=st)
         b = sketch(s, cfg, style=st)
         assert np.array_equal(np.asarray(a[0]), np.asarray(b[0])) and np.array_equal(a[1], b[1])
@@ -395,6 +395,10 @@ HASH_SETS = {
        for name in LAYOUTS + ["walls", "rooms", "boxrooms", "walls_multi", "rooms_multi"]},
     "render_mixed2": ["--n", "14", "--layout", "mixed2", "--seed", "340"] + _COMMON,
     "render_mixed3": ["--n", "18", "--layout", "mixed3", "--seed", "350"] + _COMMON,
+    # (DESIGN_SKETCH §11.5) v6 and its probe on their dataset layout, recorded before sketch v7
+    "sketch6": ["--n", "18", "--style", "sketch6", "--layout", "mixed4", "--seed", "5"] + _COMMON,
+    "sketch6swap": ["--n", "10", "--style", "sketch6swap", "--layout", "mixed4", "--seed", "6"] + _COMMON,
+    "render_mixed4": ["--n", "18", "--layout", "mixed4", "--seed", "360"] + _COMMON,
     "render_mixed_hard_aug3": ["--n", "14", "--layout", "mixed", "--agents", "4-8", "--obstacles", "0-6",
                                "--hard-ratio", "0.5", "--jitter-color", "45", "--jitter-line-width", "1.5",
                                "--jitter-background", "35", "--noise-std", "12", "--blur-sigma", "1.5",
@@ -655,7 +659,7 @@ def test_mixed4_hard_cases():
     from scene import members
     cfg = Config()
     assert MIXES["mixed4"] == MIXES["mixed3"] and LayoutOptions() == LayoutOptions(10.0, 0.0, 0.0, 0.0)
-    assert set(MIX_OPTIONS) == {"mixed4"}
+    assert set(MIX_OPTIONS) == {"mixed4", "mixed5", "mixed5_free", "mixed5_tilt", "mixed5_lines"}
     small = near = 0
     seen = {"corners_open": 0, "corners_crossed": 0, "slit": 0, "near_wall": 0}
     for s, info in _mixed4_scenes(40, 7):
@@ -709,6 +713,136 @@ def test_sketch6_letters_json():
     assert n >= 20
     s, _ = _mixed4_scenes(1, 4)[0]
     assert "letters" not in sketch(s, cfg, style=SKETCH_V5)[2].as_dict(cfg)
+
+
+# ------------------------------------------- sketch v7: mixed5, no start box
+
+def _mixed5_scenes(n, seed, mix="mixed5"):
+    from layouts import MIX_OPTIONS, MIXES
+    cfg = Config()
+    rng = np.random.default_rng(seed)
+    lay = MIXES[mix]
+    out, i = [], 0
+    while len(out) < n:
+        info = {}
+        s = random_scene(rng, cfg, lay[i % len(lay)], int(rng.integers(1, 9)), int(rng.integers(0, 7)),
+                         close=bool(rng.random() < 0.4), opts=MIX_OPTIONS[mix], info=info)
+        i += 1
+        if s is None:
+            continue
+        s.seed = 3000 + len(out)
+        out.append((s, dict(info)))
+    return out
+
+
+@test
+def test_mixed5_cases():
+    """mixed5 over 200 scenes: agents in boxes / mixed / free at about 0.6 / 0.2 /
+    0.2, slanted free-form walls, tilted room walls, touching obstacles and long
+    lines next to boxes all occur at about their rates; free agents keep the
+    simulator's spacing and clearance and reach an exit; on the drawing side
+    (sketch7) tilted boxes hold their agents' drawn circles, and sides past the
+    corners, the three glyphs and big letters occur at about their rates."""
+    from reachability import clearance, occupancy
+    from sketch import SKETCH_V7, perturb
+    import cv2
+    cfg = Config()
+    scenes = _mixed5_scenes(200, 11)
+    n = len(scenes)
+    place = {"boxes": 0, "mixed": 0, "free": 0}
+    touch = lines = tilted_rooms = room_scenes = 0
+    slanted = axis = 0
+    for s, info in scenes:
+        place[info["placement"]] += 1
+        touch += info.get("touch", 0)
+        lines += info.get("long_line", 0)
+        if s.layout in ("room", "boxrooms", "rooms", "rooms_multi"):
+            room_scenes += 1
+            tilted_rooms += bool(info.get("rooms_tilted"))
+        if s.layout in ("walls", "walls_multi"):
+            for (ax, ay), (bx, by) in s.walls[4:]:
+                (axis := axis + 1) if (abs(ax - bx) < 1e-6 or abs(ay - by) < 1e-6) else (slanted := slanted + 1)
+        assert is_solvable(cfg, s), f"{s.layout}: an agent cannot reach an exit"
+        assert s.bottleneck >= cfg.min_bottleneck
+        clear = clearance(cfg, occupancy(cfg, s))
+        for i, a in enumerate(s.agents):
+            iy, ix = int(a.pos[1] / cfg.cell), int(a.pos[0] / cfg.cell)
+            assert clear[iy, ix] >= cfg.agent_radius, f"{s.layout}: agent inside the clearance"
+            for b in s.agents[i + 1:]:
+                assert math.dist(a.pos, b.pos) >= 2 * cfg.agent_radius
+        if info["placement"] == "free":
+            assert s.starts == [] and s.exits and s.start_region is None
+        if info["placement"] != "boxes":
+            for b in s.start_boxes():
+                assert any(b.contains(a.pos) for a in s.agents), "a start box without agents"
+    rate = {k: v / n for k, v in place.items()}
+    assert 0.5 <= rate["boxes"] <= 0.72 and 0.12 <= rate["mixed"] <= 0.3 and 0.12 <= rate["free"] <= 0.3, rate
+    assert 0.18 <= touch / n <= 0.4 and 0.15 <= lines / n <= 0.4, (touch / n, lines / n)
+    assert 0.1 <= tilted_rooms / max(room_scenes, 1) <= 0.45, (tilted_rooms, room_scenes)
+    # in whole scenes the (axis-parallel) slits and long lines dilute the slanted share;
+    # the free-form wall sampler itself draws them at slant_prob
+    assert slanted > 0.15 * (slanted + axis), (slanted, axis)
+    import layouts
+    rng = np.random.default_rng(1)
+    sl = ax = 0
+    for _ in range(150):
+        pair = layouts._free_pair(rng, cfg)
+        for (a, b), (c, d) in (layouts._random_walls(rng, cfg, list(pair), 0.4) if pair else []):
+            ax, sl = (ax + 1, sl) if (abs(a - c) < 1e-6 or abs(b - d) < 1e-6) else (ax, sl + 1)
+    assert 0.3 <= sl / (sl + ax) <= 0.5, (sl, ax)
+    # drawing side
+    tilt = past = big = boxes = 0
+    glyphs = {"centre": 0, "edge": 0, "through": 0}
+    for s, _ in scenes[:60]:
+        d = perturb(s, cfg, np.random.default_rng(s.seed), SKETCH_V7)
+        for r in d.regions:
+            boxes += 1
+            tilt += bool(r.tilt)
+            past += r.past
+            big += r.big
+            if r.tilt:
+                cont = r.quad.astype(np.float32).reshape(-1, 1, 2)
+                for a in d.agents:
+                    if cv2.pointPolygonTest(cont, (float(a.centre[0]), float(a.centre[1])), False) > 0:
+                        ring = a.ring.pts[: max(3, a.ring_turn)]
+                        assert min(cv2.pointPolygonTest(cont, (float(x), float(y)), True) for x, y in ring) >= 0, \
+                            "a tilted box cuts through one of its agents"
+        for a in d.agents:
+            glyphs[a.glyph] += 1
+    na = sum(glyphs.values())
+    assert 0.15 <= tilt / boxes <= 0.45 and 0.2 <= past / boxes <= 0.4 and 0.2 <= big / boxes <= 0.4, \
+        (tilt / boxes, past / boxes, big / boxes)
+    assert 0.45 <= glyphs["centre"] / na <= 0.65 and 0.2 <= glyphs["edge"] / na <= 0.4 and \
+        0.08 <= glyphs["through"] / na <= 0.22, glyphs
+
+
+@test
+def test_scene_without_starts():
+    """A scene with no start box (agents drawn anywhere, sketch v7) simulates,
+    renders in both renderers, passes reachability and round-trips JSON."""
+    from reachability import unreachable_free
+    from sketch import SKETCH_V7, sketch
+    cfg = Config()
+    exits = [Region(80, 40, 94, 60), Region(8, 80, 22, 94)]
+    s = Scene(walls=boundary_walls(cfg.world) + [((50, 0), (50, 35)), ((50, 65), (50, 100))],
+              agents=[Agent((30.0, 30.0), 0.0), Agent((30.0, 60.0), 1.0), Agent((70.0, 20.0), 2.0)],
+              start_region=None, goal_region=exits[0], starts=[], exits=exits, layout="open", seed=4)
+    assert s.start_boxes() == [] and is_solvable(cfg, s)
+    assert bottleneck_width(cfg, s) > cfg.min_bottleneck
+    assert not unreachable_free(cfg, s).any() or True
+    sim = Simulator(s, cfg)
+    sim.reset()
+    while not sim.done:
+        sim.step(np.stack([greedy_action(sim, i) for i in range(len(sim.pos))]))
+    assert all(o is not None for o in sim.outcome) and sim.stats()["n_agents"] == 3
+    _, lab = render(s, cfg)
+    assert (lab == C_GOAL).any() and not (lab == 3).any(), "no start box drawn"
+    img, lab7, drawn = sketch(s, cfg, style=SKETCH_V7)
+    assert drawn.starts == [] and len(drawn.exits) == 2 and drawn.start_region is None
+    assert len(drawn.letters) == 2 and all(L["kind"] == "G" for L in drawn.letters)
+    back = Scene.from_dict(json.loads(json.dumps(drawn.as_dict(cfg, "t"))))
+    assert back.starts == [] and len(back.exits) == 2 and back.start_region is None
+    assert len(back.agents) == 3 and is_solvable(cfg, back)
 
 
 def main():

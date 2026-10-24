@@ -17,7 +17,11 @@ radius. `--layout mixed3` adds rooms next to boxes and several start / exit
 boxes (layouts.MULTI_LAYOUTS; DESIGN_SKETCH §9). `--style sketch6` draws every
 line from one width law and writes the boxes' letters; `--layout mixed4` is
 mixed3 with the hard cases of layouts.MIX_OPTIONS (narrow boxes, boxes near
-walls, open / crossed room corners, slits; DESIGN_SKETCH §10).
+walls, open / crossed room corners, slits; DESIGN_SKETCH §10). `--style sketch7`
+adds tilted boxes, sides past the corners, three agent glyphs and big letters,
+and `--layout mixed5` agents outside boxes, slanted and tilted walls, touching
+obstacles and long lines next to boxes (DESIGN_SKETCH §11); `mixed5_free`,
+`mixed5_tilt` (with `--style sketch7tilt`) and `mixed5_lines` are its probes.
 
 plus one `dataset.json` recording the exact configuration, so a run is
 reproducible from the output directory alone.  See README.md for the knobs.
@@ -70,7 +74,9 @@ def build_parser():
                         "free-form families walls / rooms (~40 percent); 'mixed3' adds to mixed2 "
                         "boxrooms / walls_multi / rooms_multi (a third): small rooms next to boxes, "
                         "several start and exit boxes; 'mixed4' is mixed3 with hard cases (narrow boxes, "
-                        "boxes near walls, open / crossed corners, slits)" % ", ".join(BUILDERS))
+                        "boxes near walls, open / crossed corners, slits); 'mixed5' adds agents outside boxes, "
+                        "slanted / tilted walls, touching obstacles, long lines by boxes "
+                        "(probes mixed5_free / mixed5_tilt / mixed5_lines)" % ", ".join(BUILDERS))
     p.add_argument("--agents", default="1-6", help="agents per scene, e.g. 3-8 or 4")
     p.add_argument("--obstacles", default="1-4", help="obstacles per scene, e.g. 2-6")
     p.add_argument("--hard-ratio", type=float, default=0.0,
@@ -79,7 +85,7 @@ def build_parser():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--config", default=None, help="JSON file overriding any Config field")
     p.add_argument("--style", default="render", choices=["render", "sketch", "sketch2", "sketch3", "sketch4", "sketch5",
-                            "sketch6", "sketch6swap"],
+                            "sketch6", "sketch6swap", "sketch7", "sketch7tilt"],
                    help="render: the default renderer; sketch: hand-drawn, one black pen, "
                         "photographed (sketch.py); sketch2: the same widened to tablet drawings, "
                         "thin pens and sparse fills (sketch.SKETCH_V2); sketch3: v2 plus S / G in "
@@ -87,7 +93,9 @@ def build_parser():
                         "plus agents 0.6-2x and a pen width per element (SKETCH_V4); sketch5: v4 plus smaller, "
                         "thinner letters, touching agents and drawn radii in the JSON (SKETCH_V5); sketch6: v5 "
                         "with one width law for every line and the letters in the JSON (SKETCH_V6); "
-                        "sketch6swap: a probe with thin walls and thick box sides. "
+                        "sketch6swap: a probe with thin walls and thick box sides; sketch7: v6 with tilted boxes, "
+                        "sides past corners, tails from the edge or through the circle, big letters "
+                        "(SKETCH_V7); sketch7tilt: every box tilted. "
                         "The jitter flags are ignored for the sketch styles")
 
     g = p.add_argument_group("world")

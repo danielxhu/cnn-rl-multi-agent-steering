@@ -66,6 +66,12 @@ Invariants:
   ``sketch6swap`` draws walls thin and box sides thick, the reverse of v1-v5.
   Both cap every stroke at 12 px (at 512; a thick marker gone over twice) and
   draw every letter at least 2.5 world units tall (~4 mm on the sheet).
+  ``SKETCH_V7`` (``--style sketch7``, DESIGN_SKETCH §11.2) draws boxes tilted
+  (the quadrilateral rotated about its centre, scaled so its axis-aligned box
+  stays inside the box and its agents stay inside it; the JSON keeps the
+  axis-aligned box of the drawn quadrilateral), box sides run past their
+  corners, agent tails from the centre, from the circle's edge or through the
+  circle, and big letters. ``sketch7tilt`` (probe) tilts every box.
 """
 from __future__ import annotations
 
@@ -189,6 +195,16 @@ class SketchStyle:
                                                 # box too small for it is drawn larger about its centre
     stroke_cap_px: float | None = None          # every stroke's final width at most this (px at 512)
 
+    # --- v7 options (defaults reproduce v6 exactly; see SKETCH_V7) ---
+    box_tilt_prob: float = 0.0                  # a box drawn rotated about its centre ...
+    box_tilt_deg: float = 25.0                  # ... by up to this, either way
+    side_past_prob: float = 0.0                 # a box with sides run past the corners ...
+    side_past: tuple = (0.1, 0.35)              # ... by this x the side's length, at one or both ends
+    glyph_edge_prob: float = 0.0                # agent tail from the circle's edge outward
+    glyph_through_prob: float = 0.0             # agent tail drawn through the circle
+    big_letter_prob: float = 0.0                # a letter of ...
+    big_letter: tuple = (0.6, 0.85)             # ... this x the box's shorter side
+
 
 SKETCH_V2 = SketchStyle(
     pen_width=(2.0, 5.0), digital_prob=0.35,
@@ -207,8 +223,12 @@ SKETCH_V6 = replace(SKETCH_V5, element_width=(0.5, 2.0), width_law=(0.45, 1.6), 
                     record_letters=True, letter_min_world=2.5, stroke_cap_px=12.0)
 # probe only: walls thin, box sides thick, never gone over twice
 SKETCH_V6_SWAP = replace(SKETCH_V6, wall_law=(0.45, 0.7), box_law=(1.3, 1.6), double_prob=0.0)
+SKETCH_V7 = replace(SKETCH_V6, box_tilt_prob=0.4, side_past_prob=0.3, glyph_edge_prob=0.3,
+                    glyph_through_prob=0.15, big_letter_prob=0.3)
+SKETCH_V7_TILT = replace(SKETCH_V7, box_tilt_prob=1.0)          # probe: every box tilted
 STYLES = {"sketch": SketchStyle(), "sketch2": SKETCH_V2, "sketch3": SKETCH_V3, "sketch4": SKETCH_V4,
-          "sketch5": SKETCH_V5, "sketch6": SKETCH_V6, "sketch6swap": SKETCH_V6_SWAP}
+          "sketch5": SKETCH_V5, "sketch6": SKETCH_V6, "sketch6swap": SKETCH_V6_SWAP,
+          "sketch7": SKETCH_V7, "sketch7tilt": SKETCH_V7_TILT}
 
 
 # --------------------------------------------------------------- primitives
@@ -292,8 +312,9 @@ class DrawnAgent:
     ring: Stroke
     ring_turn: int                               # points of `ring` within one full turn
     tail: Stroke
-    centre: np.ndarray                           # where the tail starts, px
+    centre: np.ndarray                           # the drawn circle's centre, px
     tip: np.ndarray
+    glyph: str = "centre"                        # v7: the tail from the centre, the "edge" or "through"
 
 
 @dataclass
@@ -308,6 +329,10 @@ class DrawnRegion:
     group: int = 0
     letter_th: int = 0                           # stroke width; 0: h / 12
     letter_form: dict | None = None              # v3: face / strokes, shear, aspect, warp seed
+    tilt: float = 0.0                            # v7: degrees the box was drawn rotated
+    short_px: float = 0.0                        # v7: the drawn box's shorter side (0: from the bbox)
+    past: bool = False                           # v7: sides drawn past the corners
+    big: bool = False                            # v7: a big letter
     # `group` is the pair index, or ("S" | "G", i) for the boxes of a several-box scene
 
 
@@ -508,9 +533,11 @@ def _seg_dist(p, a, b):
     return np.linalg.norm(p - (a + t[:, None] * ab), axis=1)
 
 
-def _letter_spot(quad, h, agents, k):
+def _letter_spot(quad, h, agents, k, inside=False):
     """Letter centre inside the drawn box, as far as possible from every drawn
-    agent (its circle and its tail). The prototype put letters on agents."""
+    agent (its circle and its tail). The prototype put letters on agents.
+    ``inside`` (v7, tilted boxes and big letters): candidates must lie at least
+    half a letter inside the drawn quadrilateral, not just its bounding box."""
     x0, y0 = quad.min(0)
     x1, y1 = quad.max(0)
     m = 0.6 * h + 2 * k
@@ -519,6 +546,11 @@ def _letter_spot(quad, h, agents, k):
         return mid
     gx, gy = np.meshgrid(np.linspace(x0 + m, x1 - m, 7), np.linspace(y0 + m, y1 - m, 15))
     cand = np.stack([gx.ravel(), gy.ravel()], 1)
+    if inside:
+        cont = quad.astype(np.float32).reshape(-1, 1, 2)
+        cand = cand[[cv2.pointPolygonTest(cont, (float(x), float(y)), True) >= 0.5 * h for x, y in cand]]
+        if not len(cand):
+            return mid
     d = np.full(len(cand), np.inf)
     for ag in agents:
         r = float(np.linalg.norm(ag.ring.pts - ag.centre, axis=1).max())
@@ -563,21 +595,39 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         dead = None                                    # blank dead space is background
 
     regions = []
+    r0 = cfg.agent_radius * cfg.scale
+    # v7 tilts boxes around their agents' drawn circles, so the drawn agent size is
+    # needed first; every earlier style draws it at its old place in the stream
+    early = st.box_tilt_prob > 0 and st.agent_scale is not None
+    size = rng.uniform(*st.agent_scale) if early else None
     for reg, ch, cls, gi in _boxes_to_draw(scene):
         a, b = P(reg.x0, reg.y1), P(reg.x1, reg.y0)
         quad = np.array([[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]])
         quad = quad + rng.normal(0, st.region_corner_sigma * k, (4, 2))
         if st.letter_min_world > 0:                    # v6: room for the smallest letter
             quad = _fit_letter(quad, st.letter_min_world * cfg.scale / st.letter_height_frac)
+        tilt, short_px = 0.0, 0.0
+        if st.box_tilt_prob > 0 and rng.random() < st.box_tilt_prob:   # v7: a tilted box
+            bound = [(np.array(P(*ag.pos)), _agent_bound(st, r0, size, ag, scene.agents, cfg), reg.contains(ag.pos))
+                     for ag in scene.agents]
+            others = [b for b, *_ in _boxes_to_draw(scene) if b is not reg]
+            quad, tilt, short_px = _tilt_quad(quad, rng.uniform(-st.box_tilt_deg, st.box_tilt_deg),
+                                              [(p, r) for p, r, i in bound if i], k,
+                                              lambda q: _clear_of(q, cfg, scene, others),
+                                              [(p, r) for p, r, i in bound if not i])
         mr = mk * ew()
         if st.width_law:                               # v6: the common law, capped by the box size
             short = min(reg.width, reg.height) * cfg.scale
             mr = min(mr * law("box"), st.box_width_cap * short)
         else:
             mr = mr * 0.6
-        sides = [_stroke(_wobbly_line(quad[i], quad[(i + 1) % 4], rng, 1.3 * k, st.region_overshoot),
-                         rng, mr, st.width_var) for i in range(4)]
-        regions.append(DrawnRegion(quad, sides, cls, ch, group=gi))
+        ends = [(quad[i], quad[(i + 1) % 4]) for i in range(4)]
+        past = st.side_past_prob > 0 and rng.random() < st.side_past_prob
+        if past:                                       # v7: sides past the corners
+            ends = _sides_past(ends, rng, st)
+        sides = [_stroke(_wobbly_line(a_, b_, rng, 1.3 * k, st.region_overshoot),
+                         rng, mr, st.width_var) for a_, b_ in ends]
+        regions.append(DrawnRegion(quad, sides, cls, ch, group=gi, tilt=tilt, short_px=short_px, past=past))
 
     boundary = {tuple(map(tuple, s)) for s in boundary_walls(cfg.world)}
     walls = []
@@ -612,9 +662,9 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         obstacles.append(DrawnObstacle(poly, outline, solid, scr, over))
 
     agents = []
-    r0 = cfg.agent_radius * cfg.scale
     centres = np.array([P(*ag.pos) for ag in scene.agents]) if scene.agents else np.zeros((0, 2))
-    size = rng.uniform(*st.agent_scale) if st.agent_scale else None
+    if not early:
+        size = rng.uniform(*st.agent_scale) if st.agent_scale else None
     for i, ag in enumerate(scene.agents):
         c = P(*ag.pos)
         if size is None:
@@ -633,18 +683,31 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
         else:
             L = ra * rng.uniform(*st.agent_tail)
         h = ag.heading + rng.normal(0, st.heading_sigma)
-        tip = c + L * np.array([math.cos(h), -math.sin(h)])
+        u = np.array([math.cos(h), -math.sin(h)])
+        tip = c + L * u
+        root, glyph = c, "centre"                      # the pen goes down at the centre ...
+        if st.glyph_edge_prob + st.glyph_through_prob > 0:    # v7: ... or at the edge, or beyond it
+            g = rng.random()
+            if g < st.glyph_through_prob:
+                root, glyph = c - u * ra * rng.uniform(0.9, 1.2), "through"
+            elif g < st.glyph_through_prob + st.glyph_edge_prob:
+                root, glyph = c + u * ra, "edge"
         ma = mk * ew()
         ma = min(ma * law("agent"), st.agent_width_cap * ra) if st.width_law else ma * 0.6
         agents.append(DrawnAgent(_stroke(ring_pts, rng, ma, st.width_var), turn,
-                                 _stroke(_wobbly_line(c, tip, rng, 0.8 * k, anchored=True), rng, ma, st.width_var),
-                                 c, tip))
+                                 _stroke(_wobbly_line(root, tip, rng, 0.8 * k, anchored=True), rng, ma, st.width_var),
+                                 c, tip, glyph))
 
     for reg in regions:                                # letters last: they avoid the drawn agents
         x0, y0 = reg.quad.min(0)
         x1, y1 = reg.quad.max(0)
-        reg.letter_h = min(st.letter_height_frac * min(x1 - x0, y1 - y0), st.letter_max_px * k)
-        if st.letter_min_world > 0:                    # v6: letter_scale's spread above the floor
+        short = reg.short_px or min(x1 - x0, y1 - y0)
+        reg.letter_h = min(st.letter_height_frac * short, st.letter_max_px * k)
+        big = st.big_letter_prob > 0 and rng.random() < st.big_letter_prob
+        if big:                                        # v7: a letter filling most of its box
+            reg.big = True
+            reg.letter_h = max(rng.uniform(*st.big_letter) * short, st.letter_min_world * cfg.scale)
+        elif st.letter_min_world > 0:                  # v6: letter_scale's spread above the floor
             lo = max(st.letter_scale[0], st.letter_min_world * cfg.scale / reg.letter_h)
             reg.letter_h *= rng.uniform(min(lo, st.letter_scale[1]), st.letter_scale[1])
         else:
@@ -654,8 +717,8 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
             reg.letter_th = max(1, int(round(mk * ew() * thin)))
         if st.letter_variety:
             reg.letter_form = _letter_form(reg.letter, rng, st)
-        reg.letter_centre = tuple(_letter_spot(reg.quad, reg.letter_h, agents, k)
-                                  + rng.normal(0, 1.5 * k, 2))
+        spot = _letter_spot(reg.quad, reg.letter_h, agents, k, inside=bool(reg.tilt) or big)
+        reg.letter_centre = tuple(spot + rng.normal(0, 1.5 * k, 2))
         reg.letter_rot = rng.uniform(-st.letter_rot_deg, st.letter_rot_deg)
         if st.letter_variety:
             reg.letter_rot = rng.uniform(-st.letter_rot_v3, st.letter_rot_v3)
@@ -677,6 +740,80 @@ def perturb(scene, cfg, rng, st: SketchStyle, fill_unreachable=True) -> Drawing:
     return Drawing(n, ink, paper, cfg.wall_half * cfg.scale, hatch, dead, regions, walls,
                    obstacles, agents, st.printed_ink, st.label_extra_wall, st.label_extra_agent,
                    digital, stray, drop_seed, drop_frac, st.record_radius, st.record_letters)
+
+
+def _agent_bound(st, r0, size, ag, agents, cfg) -> float:
+    """An upper bound (px) on how far an agent's drawn ring reaches from its centre."""
+    ra = r0 * (size if size is not None else st.agent_radius_mult[1]) * (1 + st.agent_scale_jitter)
+    others = [math.dist(ag.pos, b.pos) * cfg.scale for b in agents if b is not ag]
+    if others and size is not None:
+        ra = min(ra, st.agent_cap * min(others))
+    return ra * (1 + 3 * st.agent_wobble) * (1 + st.stretch) + 0.1 * ra
+
+
+def _clear_of(q, cfg, scene, boxes, gap=0.3) -> bool:
+    """Whether a drawn quadrilateral (px) keeps `gap` world units off every wall
+    surface, obstacle and other box (sampled along its sides every half unit)."""
+    pts = []
+    for i in range(4):
+        a, b = q[i], q[(i + 1) % 4]
+        n = max(2, int(np.linalg.norm(b - a) / (0.5 * cfg.scale)))
+        pts += [_to_world(cfg, *(a + (b - a) * t)) for t in np.linspace(0, 1, n)]
+    P = np.array(pts)
+    if (P < 0).any() or (P > cfg.world).any():
+        return False
+    for (ax, ay), (bx, by) in scene.walls:
+        e = np.array([bx - ax, by - ay])
+        t = np.clip((P - (ax, ay)) @ e / max(float(e @ e), 1e-12), 0, 1)
+        if (np.linalg.norm(P - (np.array([ax, ay]) + t[:, None] * e), axis=1) < cfg.wall_half + gap).any():
+            return False
+    for o in scene.obstacles:
+        if (np.linalg.norm(P - o.c, axis=1) < o.r + gap).any():
+            return False
+    return all(min(b.distance_to(tuple(p)) for p in P) >= gap for b in boxes)
+
+
+TILT_SCALES = (1.0, 0.95, 1.05, 0.9, 1.1, 0.85, 1.15, 0.8, 1.2)
+
+
+def _tilt_quad(quad, deg, members, k, clear=None, outsiders=()):
+    """(quad, degrees, shorter side px): a drawn box rotated about its centre by
+    `deg` and scaled about it by the first of TILT_SCALES that fits: each member
+    agent (centre px, reach px) stays inside with its drawn circle, every other
+    agent stays outside with its own, and the outline passes `clear` (off walls,
+    obstacles and other boxes); else the angle is halved (no tilt under 3°). The
+    JSON box is the rotated outline's axis-aligned box (§3.1)."""
+    c = quad.mean(0)
+    rel = quad - c
+    while abs(deg) >= 3.0:
+        t = math.radians(deg)
+        R = np.array([[math.cos(t), -math.sin(t)], [math.sin(t), math.cos(t)]])
+        for sc in TILT_SCALES:
+            q = c + sc * (rel @ R.T)
+            cont = q.astype(np.float32).reshape(-1, 1, 2)
+            inside = lambda p: cv2.pointPolygonTest(cont, (float(p[0]), float(p[1])), True)
+            if all(inside(p) >= reach + 1.0 * k for p, reach in members) and \
+                    all(inside(p) <= -(reach + 1.0 * k) for p, reach in outsiders) and (clear is None or clear(q)):
+                side = [np.linalg.norm(q[(i + 1) % 4] - q[i]) for i in range(4)]
+                return q, deg, float(min(side))
+        deg /= 2.0
+    return quad, 0.0, 0.0
+
+
+def _sides_past(ends, rng, st):
+    """One or two sides of a box run on past their corners by U(side_past) x their
+    length, at one end or both (sketch v7: a drawn box is four strokes)."""
+    out = list(ends)
+    for i in rng.choice(4, 1 + int(rng.random() < 0.5), replace=False):
+        a, b = out[i]
+        e0, e1 = rng.uniform(*st.side_past), rng.uniform(*st.side_past)
+        which = rng.random()
+        if which < 1 / 3:
+            e1 = 0.0
+        elif which < 2 / 3:
+            e0 = 0.0
+        out[i] = (a - e0 * (b - a), b + e1 * (b - a))
+    return out
 
 
 def _fit_letter(quad, short_px):

@@ -52,6 +52,7 @@ class ModelConfig:
     instance_head: bool = False
     n_classes: int = 6
     letter_head: bool = False              # S / G letter heat (sketch v6, DESIGN_SKETCH §10.3)
+    context: str = "none"                  # "dilated": residual dilated block at the bottleneck (v7, §11.1)
 
 
 @dataclass
@@ -106,6 +107,10 @@ class ExtractConfig:
     letter_thresh: float = 0.3
     letter_suppress_agents: bool = True    # (with letter_gate) an agent peak on a stronger letter dropped
     min_box_side: float = 0.0              # boxes with a shorter side (world units) dropped; 0 = off
+    # sketch v7 (DESIGN_SKETCH §11.3); 0 = off, every earlier run
+    wall_on_box_tol: float = 0.0           # wall pieces along a kept box's side dropped (v7: 1.5)
+    stub_len: float = 0.0                  # shorter wall pieces touching a box dropped (v7: 3.0)
+    line_axis_dev: float = 0.0             # lines: merge before snapping; snap only if ends move <= this (v7: 2.0)
 
 
 @dataclass
@@ -232,6 +237,18 @@ def add_letter_flags(g):
                    help="with the letter gate, keep agent peaks that sit on a stronger letter peak")
 
 
+def add_v7_flags(g):
+    """--wall-on-box-tol / --stub-len / --line-axis-dev (train, evaluate, predict;
+    sketch v7). Unset flags (None) keep the run's own values."""
+    g.add_argument("--wall-on-box-tol", dest="wall_on_box_tol", type=float, default=None,
+                   help="drop wall pieces lying along a box side, within this (world units; v7 1.5; 0 = off)")
+    g.add_argument("--stub-len", dest="stub_len", type=float, default=None,
+                   help="drop wall pieces shorter than this that touch a box (v7 3.0; 0 = off)")
+    g.add_argument("--line-axis-dev", dest="line_axis_dev", type=float, default=None,
+                   help="lines: snap a wall to the axis only if its ends move <= this (v7 2.0; 0 = the old "
+                        "pipeline): slanted walls stay one segment")
+
+
 def build_parser(description="Train one perception run.") -> argparse.ArgumentParser:
     """Flags for every RunConfig field. Defaults are None so unset flags keep the config."""
     p = argparse.ArgumentParser(description=description,
@@ -254,6 +271,9 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
     g.add_argument("--arch", default=None)
     g.add_argument("--instance-head", dest="instance_head", action="store_const", const=True,
                    default=None, help="add the heat + heading head (variant B)")
+    g.add_argument("--context", dest="context", choices=["none", "dilated"], default=None,
+                   help="dilated: a residual block of dilated convs at the bottleneck, identity at "
+                        "initialisation (sketch v7; the receptive field covers the 256 image)")
     g.add_argument("--letter-head", dest="letter_head", action="store_const", const=True,
                    default=None, help="add the S / G letter heat head (sketch v6; JSON 'letters')")
 
@@ -300,4 +320,5 @@ def build_parser(description="Train one perception run.") -> argparse.ArgumentPa
                    help="pairs: start-goal boxes paired (E5); exits: every goal box is an exit, "
                         "agents may use any, empty start boxes dropped (sketch v5)")
     add_letter_flags(g)
+    add_v7_flags(g)
     return p

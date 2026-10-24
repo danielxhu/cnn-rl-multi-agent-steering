@@ -136,8 +136,8 @@ def regions_connected(cfg, scene, radius, clear=None) -> bool:
     """Whether start_region and goal_region are linked for a disk of `radius`.
 
     Used for bottleneck search, where per-agent placement is irrelevant. A scene
-    with several boxes (`starts` / `exits`) is linked when every start box
-    reaches at least one exit.
+    with several boxes (`starts` / `exits`) is linked when every start box, and
+    every agent outside the start boxes, reaches at least one exit.
     """
     if scene.starts or scene.exits:
         if clear is None:
@@ -146,8 +146,12 @@ def regions_connected(cfg, scene, radius, clear=None) -> bool:
         exits = set()
         for g in scene.exit_boxes():
             exits |= _labels_in_region(lab, cfg, g)
-        return bool(scene.start_boxes()) and all(
-            _labels_in_region(lab, cfg, s) & exits for s in scene.start_boxes())
+        sources = [_labels_in_region(lab, cfg, s) for s in scene.start_boxes()]
+        # agents drawn outside every start box (sketch v7) are sources of their own
+        boxes = scene.start_boxes()
+        sources += [{int(lab[cell_of(cfg, a.pos)])} for a in scene.agents
+                    if not any(b.contains(a.pos) for b in boxes)]
+        return bool(sources) and all(src & exits for src in sources)
     if scene.start_region is None or scene.goal_region is None:
         return is_solvable(cfg, scene, radius, clear)
     if clear is None:

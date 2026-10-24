@@ -43,6 +43,18 @@ on for ``--layout mixed4`` (the ``mixed3`` families):
     slit_prob           per scene: two parallel walls U(3, 8) apart, U(8, 25) long,
                         alone or alongside an existing wall
 
+Sketch v7 (DESIGN_SKETCH §11.2) adds, again off by default, for ``--layout mixed5``:
+
+    agent_mixed_prob,   per scene: some agents in start boxes and the others
+    agent_free_prob     anywhere in free space ("mixed"), or no start box at all
+                        ("free"); else every agent in a start box ("boxes")
+    slant_prob          per free-form wall: any angle (default: 0.25, as before)
+    room_tilt_prob      per room (``room``, ``boxrooms``, ``rooms*``): one or two
+                        walls tilted by U(5°, 25°), the room still closed
+    touch_prob          per scene: one obstacle touching a box from outside or a wall
+    long_line_prob      per scene: a free-standing wall U(25, 70) long parallel
+                        to a box's long side at U(4, 20)
+
 Every scene is validated before it is returned: start must reach goal for a
 disk of the agent's radius, and the tightest passage must exceed min_bottleneck.
 With several boxes every agent must reach at least one exit, every exit must
@@ -82,6 +94,9 @@ MIXES["mixed3"] = MIXES["mixed2"] + ["boxrooms", "boxrooms", "walls_multi", "wal
                                      "rooms_multi", "rooms_multi"]
 # sketch v6: the mixed3 families with the hard cases of MIX_OPTIONS["mixed4"]
 MIXES["mixed4"] = list(MIXES["mixed3"])
+# sketch v7: the same families with MIX_OPTIONS["mixed5"], and its three probes
+for _name in ("mixed5", "mixed5_free", "mixed5_tilt", "mixed5_lines"):
+    MIXES[_name] = list(MIXES["mixed4"])
 
 
 @dataclass(frozen=True)
@@ -93,11 +108,23 @@ class LayoutOptions:
     box_near_wall_prob: float = 0.0   # per box: a gap of U(0.3, 2.0) to a wall surface
     corner_gap_prob: float = 0.0      # per room corner: left open or crossed
     slit_prob: float = 0.0            # per scene: two parallel walls 3-8 apart
+    # sketch v7 (DESIGN_SKETCH §11.2)
+    agent_mixed_prob: float = 0.0     # per scene: some agents in boxes, the rest anywhere
+    agent_free_prob: float = 0.0      # per scene: no start box, every agent anywhere
+    slant_prob: float = 0.0           # per free-form wall: any angle (0: 0.25, the old rate)
+    room_tilt_prob: float = 0.0       # per room: one or two walls tilted 5-25°
+    touch_prob: float = 0.0           # per scene: an obstacle touching a box or a wall
+    long_line_prob: float = 0.0       # per scene: a long wall parallel to a box's long side
 
 
 DEFAULT_OPTIONS = LayoutOptions()
 MIX_OPTIONS = {"mixed4": LayoutOptions(box_short_min=6.0, box_near_wall_prob=0.3,
                                        corner_gap_prob=0.5, slit_prob=0.3)}
+MIX_OPTIONS["mixed5"] = replace(MIX_OPTIONS["mixed4"], agent_mixed_prob=0.2, agent_free_prob=0.2,
+                                slant_prob=0.4, room_tilt_prob=0.3, touch_prob=0.3, long_line_prob=0.3)
+MIX_OPTIONS["mixed5_free"] = replace(MIX_OPTIONS["mixed5"], agent_mixed_prob=0.5, agent_free_prob=0.5)
+MIX_OPTIONS["mixed5_tilt"] = replace(MIX_OPTIONS["mixed5"], slant_prob=1.0, room_tilt_prob=1.0)   # with --style sketch7tilt
+MIX_OPTIONS["mixed5_lines"] = replace(MIX_OPTIONS["mixed5"], long_line_prob=1.0)
 
 
 @dataclass
@@ -156,13 +183,21 @@ def _room(rng, cfg, opts=DEFAULT_OPTIONS):
     x1, y1 = W - rng.uniform(6.0, 16.0), W - rng.uniform(6.0, 16.0)
     inner = rect_outline(x0, y0, x1, y1)
     hard = {}
-    if opts.corner_gap_prob > 0:
-        inner = _open_corners(rng, cfg, inner, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], opts, hard)
-    walls = boundary_walls(W) + inner
     ix0, iy0, ix1, iy1 = x0 + m, y0 + m, x1 - m, y1 - m
+    groups = [(Region(ix0, iy0, ix0 + 13, iy1), Region(ix1 - 13, iy0, ix1, iy1))]
+    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if opts.room_tilt_prob > 0:                        # v7: tilt walls, keeping off the boxes
+        def ok(c):
+            return all(cfg.wall_half <= v <= W - cfg.wall_half for q in c for v in q) and all(
+                _seg_region_dist(sd, b) >= cfg.wall_half + 1.0 for sd in _quad_sides(c) for b in groups[0])
+        corners = _tilt_corners(rng, corners, [False] * 4, opts, ok, hard, outward_only=False)
+        inner = _quad_sides(corners)
+    if opts.corner_gap_prob > 0:
+        inner = _open_corners(rng, cfg, inner, corners, opts, hard)
+    walls = boundary_walls(W) + inner
     return LayoutSpec(
         walls=walls,
-        groups=[(Region(ix0, iy0, ix0 + 13, iy1), Region(ix1 - 13, iy0, ix1, iy1))],
+        groups=groups,
         place_zone=Region(ix0 + 20, iy0, ix1 - 20, iy1),
         name="room", hard=hard or None,
     )
@@ -329,14 +364,15 @@ def _walls(rng, cfg, opts=DEFAULT_OPTIONS):
     if pair is None:
         return _open(rng, cfg)
     s, g = pair
-    walls = _random_walls(rng, cfg, [s, g])
+    walls = _random_walls(rng, cfg, [s, g], opts.slant_prob or 0.25)
     m = _margin(cfg)
     return LayoutSpec(walls=boundary_walls(W) + walls, groups=[(s, g)],
                       place_zone=Region(m, m, W - m, W - m), name="walls")
 
 
-def _random_walls(rng, cfg, boxes):
-    """0-6 random walls kept off every box (the wall sampler of ``walls``)."""
+def _random_walls(rng, cfg, boxes, slant_prob=0.25):
+    """0-6 random walls kept off every box (the wall sampler of ``walls``); each at
+    any angle with p = slant_prob, else axis-parallel."""
     W = cfg.world
     keep_off = cfg.wall_half + cfg.region_margin
     walls, want = [], int(rng.integers(0, 7))
@@ -344,7 +380,7 @@ def _random_walls(rng, cfg, boxes):
         if len(walls) >= want:
             break
         L = rng.uniform(12.0, 55.0)
-        diag = rng.random() < 0.25
+        diag = rng.random() < slant_prob
         if rng.random() < 0.35:                        # attached to the boundary, pointing inward
             edge = int(rng.integers(4))
             t = rng.uniform(10.0, W - 10.0)
@@ -391,17 +427,20 @@ def _split_wall(axis_x, pos, lo, hi, n_doors, rng):
 
 def _rooms(rng, cfg, opts=DEFAULT_OPTIONS):
     W, m = cfg.world, _margin(cfg)
-    walls, rooms = _room_walls(rng, cfg)
+    hard = {}
+    walls, rooms = _room_walls(rng, cfg, opts, hard)
     i, j = rng.choice(len(rooms), 2, replace=False)
     pair = _free_pair(rng, cfg, zones=(rooms[i], rooms[j]), opts=opts)
     if pair is None:
         return _open(rng, cfg)
     return LayoutSpec(walls=boundary_walls(W) + walls, groups=[pair],
-                      place_zone=Region(m, m, W - m, W - m), name="rooms")
+                      place_zone=Region(m, m, W - m, W - m), name="rooms", hard=hard or None)
 
 
-def _room_walls(rng, cfg):
-    """(walls, rooms inset by the margin): the wall sampler of ``rooms``."""
+def _room_walls(rng, cfg, opts=DEFAULT_OPTIONS, hard=None):
+    """(walls, rooms inset by the margin): the wall sampler of ``rooms``. With
+    room_tilt_prob (v7) a single dividing wall is tilted by U(5°, 25°) about its
+    middle (doors and all), its rooms shrunk by the shift so boxes keep off it."""
     W, m = cfg.world, _margin(cfg)
     mode = rng.choice(["v", "h", "both"])
     xs = rng.uniform(30.0, 70.0) if mode in ("v", "both") else None
@@ -424,7 +463,72 @@ def _room_walls(rng, cfg):
     gy = [0.0] + ([ys] if ys is not None else []) + [W]
     rooms = [Region(gx[i] + m, gy[j] + m, gx[i + 1] - m, gy[j + 1] - m)
              for i in range(len(gx) - 1) for j in range(len(gy) - 1)]
+    if opts.room_tilt_prob > 0 and mode != "both" and rng.random() < opts.room_tilt_prob:
+        t = math.tan(math.radians(rng.uniform(5.0, 25.0))) * (1 if rng.random() < 0.5 else -1)
+        d = abs(t) * W / 2                             # the largest shift of the divider
+        line = xs if mode == "v" else ys
+        bounds = []
+        for r in rooms:                                # each room loses d on the divider's side
+            lo, hi = (r.x0, r.x1) if mode == "v" else (r.y0, r.y1)
+            lo, hi = (lo + d, hi) if lo > line else (lo, hi - d)
+            bounds.append((r, lo, hi))
+        if all(hi - lo >= 12.0 for _, lo, hi in bounds):   # else too steep for these rooms: no tilt
+            if hard is not None:
+                hard["rooms_tilted"] = hard.get("rooms_tilted", 0) + 1
+            if mode == "v":
+                walls = [tuple((x + (y - W / 2) * t, y) for x, y in w) for w in walls]
+                rooms = [Region(lo, r.y0, hi, r.y1) for r, lo, hi in bounds]
+            else:
+                walls = [tuple((x, y + (x - W / 2) * t) for x, y in w) for w in walls]
+                rooms = [Region(r.x0, lo, r.x1, hi) for r, lo, hi in bounds]
     return walls, rooms
+
+
+def _quad_sides(c):
+    """The four sides of a room given as corners [c0, c1, c2, c3] (c0 bottom-left,
+    counter-clockwise), in the order and direction of ``_room_sides``."""
+    return [(c[0], c[1]), (c[1], c[2]), (c[3], c[2]), (c[0], c[3])]
+
+
+_SIDE_ENDS = {0: (0, 1), 1: (1, 2), 2: (3, 2), 3: (0, 3)}     # side -> its corners
+_CORNER_SIDES = {0: (0, 3), 1: (0, 1), 2: (1, 2), 3: (2, 3)}  # corner -> the sides meeting there
+
+
+def _tilt_corners(rng, corners, on_frame, opts, ok, hard, outward_only):
+    """With p = room_tilt_prob: one or two of the room's inner sides tilted by
+    U(5°, 25°). A side tilts when one of its ends slides along the other side
+    meeting there, so that side stays straight and the room stays closed (a
+    frame side keeps its ends on the frame). `ok(corners)` must accept the
+    result; outward_only: only slides that enlarge the room."""
+    if rng.random() >= opts.room_tilt_prob:
+        return corners
+    out = [tuple(c) for c in corners]
+    inner = [i for i in range(4) if not on_frame[i]]
+    want, done = 1 + int(rng.random() < 0.5), 0
+    for _ in range(10):
+        if done >= want or not inner:
+            break
+        i = inner[int(rng.integers(len(inner)))]
+        c = _SIDE_ENDS[i][int(rng.integers(2))]
+        j = [q for q in _CORNER_SIDES[c] if q != i][0]
+        other = [q for q in _SIDE_ENDS[j] if q != c][0]
+        far = [q for q in _SIDE_ENDS[i] if q != c][0]
+        L = math.dist(out[c], out[far])
+        Lj = math.dist(out[c], out[other])
+        if L < 1e-6 or Lj < 1e-6:
+            continue
+        ux, uy = (out[c][0] - out[other][0]) / Lj, (out[c][1] - out[other][1]) / Lj
+        t = L * math.tan(math.radians(rng.uniform(5.0, 25.0)))
+        if not outward_only and rng.random() < 0.5:
+            t = -min(t, 0.5 * Lj)
+        new = list(out)
+        new[c] = (out[c][0] + ux * t, out[c][1] + uy * t)
+        if ok(new):
+            out = new
+            done += 1
+    if done:
+        hard["rooms_tilted"] = hard.get("rooms_tilted", 0) + 1
+    return out
 
 
 # ------------------------------------------- multi-box families (sketch v5)
@@ -486,14 +590,15 @@ def _walls_multi(rng, cfg, opts=DEFAULT_OPTIONS):
     if boxes is None:
         return _open(rng, cfg)
     starts, exits = boxes
-    walls = _random_walls(rng, cfg, starts + exits)
+    walls = _random_walls(rng, cfg, starts + exits, opts.slant_prob or 0.25)
     return LayoutSpec(walls=boundary_walls(W) + walls, groups=[(starts[0], exits[0])],
                       place_zone=whole, name="walls_multi", starts=starts, exits=exits)
 
 
 def _rooms_multi(rng, cfg, opts=DEFAULT_OPTIONS):
     W, m = cfg.world, _margin(cfg)
-    walls, rooms = _room_walls(rng, cfg)
+    hard = {}
+    walls, rooms = _room_walls(rng, cfg, opts, hard)
     k, n_exits = _box_counts(rng)
     boxes = _free_boxes(rng, cfg, k, n_exits, lambda r, j: rooms[int(r.integers(len(rooms)))],
                         avoid=lambda b, j: [], short_min=opts.box_short_min)
@@ -502,7 +607,7 @@ def _rooms_multi(rng, cfg, opts=DEFAULT_OPTIONS):
     starts, exits = boxes
     return LayoutSpec(walls=boundary_walls(W) + walls, groups=[(starts[0], exits[0])],
                       place_zone=Region(m, m, W - m, W - m), name="rooms_multi",
-                      starts=starts, exits=exits)
+                      starts=starts, exits=exits, hard=hard or None)
 
 
 def _rect_gap(a, b) -> float:
@@ -544,14 +649,17 @@ def _small_room(rng, cfg, others, lo=10.0, hi=30.0):
     return None
 
 
-def _room_sides(cfg, room, rng, opts=DEFAULT_OPTIONS, hard=None):
+def _room_sides(cfg, room, rng, opts=DEFAULT_OPTIONS, hard=None, corners=None):
     """The room's walls: every side not on the frame; one door (75 %) or two on
     different sides, 9.5-12 wide (the free gap beats min_bottleneck) with at
-    least 2 units of wall on either side, so the room still reads as a rectangle."""
+    least 2 units of wall on either side, so the room still reads as a rectangle.
+    `corners` (v7): the room's tilted corners instead of the Region's."""
     W = cfg.world
     x0, y0, x1, y1 = room.x0, room.y0, room.x1, room.y1
     sides = [((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x0, y1), (x1, y1)), ((x0, y0), (x0, y1))]
     on_frame = [y0 <= 0.0, x1 >= W, y1 >= W, x0 <= 0.0]
+    if corners is not None:
+        sides = _quad_sides(corners)
     inner = [i for i in range(4) if not on_frame[i]]
     doorable = [i for i in inner if math.dist(*sides[i]) >= 14.0]
     n_doors = 1 + int(rng.random() < 0.25 and len(doorable) > 1)
@@ -570,7 +678,7 @@ def _room_sides(cfg, room, rng, opts=DEFAULT_OPTIONS, hard=None):
         walls.append(((ax, ay), (ax + ux * lo, ay + uy * lo)))
         walls.append(((ax + ux * hi, ay + uy * hi), (bx, by)))
     if opts.corner_gap_prob > 0:
-        walls = _open_corners(rng, cfg, walls, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], opts, hard)
+        walls = _open_corners(rng, cfg, walls, corners or [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], opts, hard)
     return walls
 
 
@@ -619,7 +727,7 @@ def _boxrooms(rng, cfg, tries=10, opts=DEFAULT_OPTIONS):
         # which boxes go into a room: each non-decoy room takes one with p = 0.7
         order = [int(j) for j in rng.permutation(k + n_exits)]
         plan = [None] * (k + n_exits)
-        rooms, walls, holders, hard = [], [], 0, {}
+        rooms, rects, walls, holders, hard = [], [], [], 0, {}
         lo = opts.box_short_min
         for i in range(n_rooms):
             hold = (i > 0 or not decoy) and holders < k + n_exits - 1 and rng.random() < 0.7
@@ -629,11 +737,25 @@ def _boxrooms(rng, cfg, tries=10, opts=DEFAULT_OPTIONS):
             if hold:
                 plan[order[holders]] = len(rooms)
                 holders += 1
+            corners = None
+            if opts.room_tilt_prob > 0:                # v7: tilted outward, the room only grows
+                on_frame = [room.y0 <= 0.0, room.x1 >= W, room.y1 >= W, room.x0 <= 0.0]
+
+                def ok(c, others=list(rooms)):
+                    bb = Region(min(q[0] for q in c), min(q[1] for q in c), max(q[0] for q in c), max(q[1] for q in c))
+                    return (all(0.0 <= v <= W for q in c for v in q)
+                            and all(_rect_gap(bb, o) >= 10.0 for o in others))
+                corners = _tilt_corners(rng, [(room.x0, room.y0), (room.x1, room.y0), (room.x1, room.y1),
+                                              (room.x0, room.y1)], on_frame, opts, ok, hard, outward_only=True)
+            rects.append(room)
+            if corners is not None:                    # spacing and "keep off" use the outline's box
+                room = Region(min(q[0] for q in corners), min(q[1] for q in corners),
+                              max(q[0] for q in corners), max(q[1] for q in corners))
             rooms.append(room)
-            walls += _room_sides(cfg, room, rng, opts, hard)
+            walls += _room_sides(cfg, rects[-1], rng, opts, hard, corners)
         if not rooms:
             continue
-        inner = [Region(r.x0 + inset, r.y0 + inset, r.x1 - inset, r.y1 - inset) for r in rooms]
+        inner = [Region(r.x0 + inset, r.y0 + inset, r.x1 - inset, r.y1 - inset) for r in rects]
         boxes = _free_boxes(rng, cfg, k, n_exits,
                             lambda r, j: whole if plan[j] is None else inner[plan[j]],
                             lambda box, j: rooms if plan[j] is None else [], short_min=lo)
@@ -766,6 +888,40 @@ def _add_slit(rng, cfg, spec):
     return spec, False
 
 
+def _add_long_line(rng, cfg, spec):
+    """A free-standing wall U(25, 70) long parallel to a box's long side, U(4, 20)
+    from it (sketch v7; the C12B drawing): locally just like the side of a
+    narrow box. Kept off the other boxes; no near-miss slivers with other walls."""
+    W = cfg.world
+    boxes = _boxes_of(spec)
+    keep = cfg.wall_half + cfg.region_margin
+    for _ in range(40):
+        b = boxes[int(rng.integers(len(boxes)))]
+        L, d = rng.uniform(25.0, 70.0), rng.uniform(4.0, 20.0)
+        horiz = b.width >= b.height                    # parallel to the long side
+        side = 1 if rng.random() < 0.5 else -1
+        if horiz:
+            y = b.y1 + d if side > 0 else b.y0 - d
+            cx = b.center[0] + rng.uniform(-0.25, 0.25) * L
+            seg = ((max(3.0, cx - L / 2), y), (min(W - 3.0, cx + L / 2), y))
+            off = not (3.0 <= y <= W - 3.0)
+        else:
+            x = b.x1 + d if side > 0 else b.x0 - d
+            cy = b.center[1] + rng.uniform(-0.25, 0.25) * L
+            seg = ((x, max(3.0, cy - L / 2)), (x, min(W - 3.0, cy + L / 2)))
+            off = not (3.0 <= x <= W - 3.0)
+        if off or math.dist(*seg) < 20.0:
+            continue
+        if _seg_region_dist(seg, b) < 4.0 - 1e-6:
+            continue
+        if any(_seg_region_dist(seg, q) < keep for q in boxes if q != b):
+            continue
+        if any(2.0 < _seg_seg_dist(seg, w) < 6.0 for w in spec.walls):
+            continue
+        return replace(spec, walls=spec.walls + [seg]), True
+    return spec, False
+
+
 def _build(layout, rng, cfg, opts):
     """BUILDERS[layout] with the options for the families that take them."""
     fn = BUILDERS[layout]
@@ -775,7 +931,8 @@ def _build(layout, rng, cfg, opts):
 
 
 def _hard_cases(rng, cfg, spec, opts):
-    """Slit, then boxes near walls; counts in spec.hard."""
+    """Slit, then boxes near walls, then (v7) a long line next to a box where
+    the box ended up; counts in spec.hard."""
     hard = dict(spec.hard or {})
     if opts.slit_prob > 0 and rng.random() < opts.slit_prob:
         spec, ok = _add_slit(rng, cfg, spec)
@@ -783,16 +940,80 @@ def _hard_cases(rng, cfg, spec, opts):
     if opts.box_near_wall_prob > 0:
         spec, n = _near_walls(rng, cfg, spec, opts)
         hard["near_wall"] = n
+    if opts.long_line_prob > 0 and rng.random() < opts.long_line_prob:
+        spec, ok = _add_long_line(rng, cfg, spec)
+        hard["long_line"] = int(ok)
     return replace(spec, hard=hard)
 
 
 # ------------------------------------------------------------------ sampling
 
-def _place_obstacles(rng, cfg, scene, spec, n, builder):
+def _links_ok(cfg, spec, clear) -> bool:
+    """The spec's boxes still linked for an agent (every start to an exit, every pair)."""
+    if spec.starts is not None:
+        return _boxes_linked(cfg, spec.starts, spec.exits, cfg.agent_radius, clear)
+    probe = Scene(walls=spec.walls)
+    for start, goal in spec.groups:
+        probe.start_region, probe.goal_region = start, goal
+        if not regions_connected(cfg, probe, cfg.agent_radius, clear=clear):
+            return False
+    return True
+
+
+def _touching_obstacle(rng, cfg, scene, spec, builder) -> bool:
+    """Sketch v7: one obstacle touching a box from outside, or a wall (a gap of
+    U(-0.3, 0.5) units between the drawn outlines: the box's rectangle, the wall's
+    centre line), kept off the other boxes, the boxes still linked."""
+    W = cfg.world
+    boxes = _boxes_of(spec)
+    walls = spec.walls[4:]
+    for _ in range(60):
+        r = rng.uniform(cfg.obstacle_r_min, cfg.obstacle_r_max)
+        gap = rng.uniform(-0.3, 0.5)
+        if walls and rng.random() < 0.5:               # a wall
+            (ax, ay), (bx, by) = walls[int(rng.integers(len(walls)))]
+            L = math.hypot(bx - ax, by - ay)
+            if L < 6.0:
+                continue
+            t, sgn = rng.uniform(0.15, 0.85), (1 if rng.random() < 0.5 else -1)
+            nx, ny = -(by - ay) / L * sgn, (bx - ax) / L * sgn
+            c = (ax + (bx - ax) * t + nx * (r + gap), ay + (by - ay) * t + ny * (r + gap))
+            target = None
+        else:                                          # a box, from outside
+            target = boxes[int(rng.integers(len(boxes)))]
+            side = int(rng.integers(4))
+            u = rng.uniform(0.15, 0.85)
+            if side == 0:
+                c = (target.x0 + u * target.width, target.y0 - r - gap)
+            elif side == 1:
+                c = (target.x1 + r + gap, target.y0 + u * target.height)
+            elif side == 2:
+                c = (target.x0 + u * target.width, target.y1 + r + gap)
+            else:
+                c = (target.x0 - r - gap, target.y0 + u * target.height)
+        if not (r + cfg.wall_half <= c[0] <= W - r - cfg.wall_half and r + cfg.wall_half <= c[1] <= W - r - cfg.wall_half):
+            continue
+        if any(math.dist(c, o.c) < r + o.r + cfg.obstacle_gap for o in scene.obstacles):
+            continue
+        if any(b.distance_to(c) < r + (gap - 1e-6 if b is target else cfg.obstacle_clear_goal) for b in boxes):
+            continue
+        if not _links_ok(cfg, spec, clearance(cfg, builder.trial(c, r))):
+            continue
+        builder.commit(c, r)
+        scene.obstacles.append(Obstacle(c, r))
+        return True
+    return False
+
+
+def _place_obstacles(rng, cfg, scene, spec, n, builder, opts=DEFAULT_OPTIONS):
     """Add obstacles one at a time, rejecting any that seal off the goal."""
     zone = spec.place_zone
     if zone.width <= 0 or zone.height <= 0:
         return
+    if opts.touch_prob > 0 and rng.random() < opts.touch_prob:   # v7: one touching, extra
+        if _touching_obstacle(rng, cfg, scene, spec, builder):
+            n += 1
+            spec.hard = dict(spec.hard or {}, touch=1)
     tries = 0
     while len(scene.obstacles) < n and tries < cfg.max_place_tries:
         tries += 1
@@ -890,6 +1111,30 @@ def _place_agents_multi(rng, cfg, scene, spec, n, clear, hard, close):
     return sorted(set(box_of))
 
 
+def _place_free_agents(rng, cfg, placed, boxes, exits, n, clear, gap):
+    """Sketch v7: n agents anywhere in free space that reaches an exit, with the
+    simulator's spacing and wall clearance, off every box, any heading."""
+    W, R = cfg.world, cfg.agent_radius
+    lab = _labels(free_mask(clear, R))
+    ok_labels = set()
+    for g in exits:
+        ok_labels |= _labels_in_region(lab, cfg, g)
+    out = []
+    for _ in range(n):
+        for _t in range(cfg.max_place_tries):
+            p = (rng.uniform(R, W - R), rng.uniform(R, W - R))
+            iy, ix = cell_of(cfg, p)
+            if clear[iy, ix] < R or int(lab[iy, ix]) not in ok_labels:
+                continue
+            if any(b.distance_to(p) < R for b in boxes):
+                continue
+            if any(math.dist(p, q.pos) < 2 * R + gap for q in placed + out):
+                continue
+            out.append(Agent(pos=p, heading=rng.uniform(-math.pi, math.pi)))
+            break
+    return out
+
+
 def _place_agents(rng, cfg, scene, spec, n, clear, hard, close=False):
     """Spread agents over the groups' start regions, honouring physical size.
 
@@ -947,13 +1192,21 @@ def random_scene(rng, cfg=None, layout="open", n_agents=1, n_obstacles=0,
         spec = _build(layout, rng, cfg, opts)
         if opts != DEFAULT_OPTIONS:
             spec = _hard_cases(rng, cfg, spec, opts)
+        placement = "boxes"
+        if opts.agent_mixed_prob + opts.agent_free_prob > 0:      # v7: agents outside boxes
+            u = rng.random()
+            placement = ("free" if u < opts.agent_free_prob else
+                         "mixed" if u < opts.agent_free_prob + opts.agent_mixed_prob else "boxes")
         scene = Scene(walls=spec.walls, layout=layout, groups=list(spec.groups),
                       start_region=spec.groups[0][0], goal_region=spec.groups[0][1])
         builder = OccupancyBuilder(cfg, spec.walls)
 
-        _place_obstacles(rng, cfg, scene, spec, n_obstacles, builder)
+        _place_obstacles(rng, cfg, scene, spec, n_obstacles, builder, opts)
         clear = builder.clearance()
-        if spec.starts is not None:
+        if placement != "boxes":
+            if not _place_outside(rng, cfg, scene, spec, n_agents, clear, hard, close, placement):
+                continue
+        elif spec.starts is not None:
             used = _place_agents_multi(rng, cfg, scene, spec, n_agents, clear, hard, close)
             if not scene.agents:
                 continue
@@ -979,5 +1232,43 @@ def random_scene(rng, cfg=None, layout="open", n_agents=1, n_obstacles=0,
         if info is not None:
             info.clear()
             info.update(spec.hard or {})
+            info["placement"] = placement
         return scene
     return None
+
+
+def _unique(regs) -> list:
+    out = []
+    for r in regs:
+        if r not in out:
+            out.append(r)
+    return out
+
+
+def _place_outside(rng, cfg, scene, spec, n, clear, hard, close, placement) -> bool:
+    """Sketch v7 placements: "mixed" puts 30-70 % of the agents in start boxes and
+    the rest anywhere; "free" drops every start box and puts every agent
+    anywhere. The scene keeps several-box form (``starts`` may be empty); every
+    exit must be reachable from an agent. False: try another scene."""
+    starts = list(spec.starts) if spec.starts is not None else _unique([s for s, _ in spec.groups])
+    exits = list(spec.exits) if spec.exits is not None else _unique([g for _, g in spec.groups])
+    n_box = 0 if placement == "free" else min(n, max(1, int(round(n * rng.uniform(0.3, 0.7)))))
+    used = []
+    if n_box:
+        used = _place_agents_multi(rng, cfg, scene, replace(spec, starts=starts, exits=exits),
+                                   n_box, clear, hard, close)
+    else:
+        scene.agents = []
+    gap = cfg.hard_gap if (hard or close) else cfg.agent_gap
+    kept = [starts[i] for i in used]
+    scene.agents = scene.agents + _place_free_agents(rng, cfg, scene.agents, kept + exits, exits,
+                                                     n - len(scene.agents), clear, gap)
+    if not scene.agents:
+        return False
+    lab = _labels(free_mask(clear, cfg.agent_radius))
+    reached = {int(lab[cell_of(cfg, a.pos)]) for a in scene.agents}
+    if not all(_labels_in_region(lab, cfg, g) & reached for g in exits):
+        return False                                   # an exit nobody can reach
+    scene.groups, scene.starts, scene.exits = [], kept, exits
+    scene.start_region, scene.goal_region = (kept[0] if kept else None), exits[0]
+    return True

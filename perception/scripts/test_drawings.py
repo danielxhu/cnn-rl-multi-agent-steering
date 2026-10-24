@@ -3,11 +3,13 @@
     python scripts/test_drawings.py              # photos in results/drawings_v5/input
     python scripts/test_drawings.py --dry-run    # print the commands only
 
-``--run`` defaults to the v6 run (``E:\\cnn-runs\\sketch6_ft_seed0``) once it has a
-checkpoint, else the v5 run. With a v6 run (letter head) the parses go to
-``results/drawings_v6``, ``compare_<name>.png`` is photo | v5 clean | v6
-overlay | v6 clean, and the tuned letter threshold is used too
-(DESIGN_SKETCH §10.6); with the v5 run everything is as before.
+``--run`` defaults to the newest run that has a checkpoint: v7
+(``E:\\cnn-runs\\sketch7_ft_seed0``), else v6 (``sketch6_ft_seed0``), else v5.
+With a v6 run (letter head) the parses go to ``results/drawings_v6``,
+``compare_<name>.png`` is photo | v5 clean | v6 overlay | v6 clean, and the
+tuned letter threshold is used too (DESIGN_SKETCH §10.6); a v7 run (context
+block) does the same into ``results/drawings_v7`` with photo | v6 clean | v7
+overlay | v7 clean (§11.4); with the v5 run everything is as before.
 
 For every photo in ``--input`` not parsed yet: ``predict.py --photo`` (retried
 without ``--photo`` when the corner markers are not found) with the thresholds
@@ -27,22 +29,33 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_v5 import HERE, IMAGE_EXT, PY, REPO, banner, run, side_by_side, tuned  # noqa: E402
 import run_v6  # noqa: E402
+import run_v7  # noqa: E402
 
+V7_RUN = r"E:\cnn-runs\sketch7_ft_seed0"
 V6_RUN = r"E:\cnn-runs\sketch6_ft_seed0"
 V5_RUN = r"E:\cnn-runs\sketch5_ft_seed0"
 
 
 def default_run() -> str:
-    """The v6 run once it has a checkpoint, else the v5 run."""
-    return V6_RUN if (Path(V6_RUN) / "ckpt_best.pt").exists() else V5_RUN
+    """The newest run that has a checkpoint: v7, else v6, else v5."""
+    return next((r for r in (V7_RUN, V6_RUN) if (Path(r) / "ckpt_best.pt").exists()), V5_RUN)
+
+
+def _model_cfg(run_dir: Path) -> dict:
+    p = Path(run_dir) / "config.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("model", {})
+    except (OSError, ValueError):
+        return {}
 
 
 def has_letter_head(run_dir: Path) -> bool:
-    p = Path(run_dir) / "config.json"
-    try:
-        return bool(json.loads(p.read_text(encoding="utf-8")).get("model", {}).get("letter_head"))
-    except (OSError, ValueError):
-        return False
+    return bool(_model_cfg(run_dir).get("letter_head"))
+
+
+def has_context(run_dir: Path) -> bool:
+    """A v7 run: the dilated context block (DESIGN_SKETCH §11.1)."""
+    return _model_cfg(run_dir).get("context", "none") not in (None, "none")
 
 
 def summary_row(name: str, rec: dict, low: float) -> str:
@@ -60,8 +73,8 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--input", default=str(HERE / "results" / "drawings_v5" / "input"))
     p.add_argument("--out", default=None,
-                   help="default: results/drawings_v6 for a v6 run, results/drawings_v5 for v5")
-    p.add_argument("--run", default=None, help="default: the v6 run if it exists, else the v5 run")
+                   help="default: results/drawings_v7 / _v6 / _v5 for a v7 / v6 / v5 run")
+    p.add_argument("--run", default=None, help="default: the newest run that exists (v7, v6, v5)")
     p.add_argument("--low", type=float, default=0.6, help="flag agents below this confidence")
     p.add_argument("--redo", action="store_true", help="parse every photo again")
     p.add_argument("--no-push", action="store_true")
@@ -69,6 +82,8 @@ def main(argv=None):
     a = p.parse_args(argv)
     dry = a.dry_run
     run_dir = Path(a.run or default_run())
+    if has_context(run_dir) or (dry and run_dir.name.startswith("sketch7")):
+        return main_v6(a, run_dir, v7=True)
     if has_letter_head(run_dir) or (dry and run_dir.name.startswith("sketch6")):
         return main_v6(a, run_dir)
     a.out = a.out or str(HERE / "results" / "drawings_v5")
@@ -122,11 +137,13 @@ def main(argv=None):
     return 0
 
 
-def main_v6(a, run_dir: Path) -> int:
-    """The same with a v6 run: letter threshold too, the four-panel compare sheet."""
+def main_v6(a, run_dir: Path, v7: bool = False) -> int:
+    """The same with a v6 run: letter threshold too, the four-panel compare sheet.
+    A v7 run: drawings_v7, the v7 sheet (v6 clean from drawings_v6 when there) and summary."""
     dry = a.dry_run
     src = Path(a.input).resolve()
-    dst = Path(a.out or HERE / "results" / "drawings_v6").resolve()
+    ver = "v7" if v7 else "v6"
+    dst = Path(a.out or HERE / "results" / f"drawings_{ver}").resolve()
     ckpt = run_dir / "ckpt_best.pt"
     src.mkdir(parents=True, exist_ok=True)
     photos = sorted(q for q in src.iterdir() if q.suffix in IMAGE_EXT)
@@ -144,17 +161,18 @@ def main_v6(a, run_dir: Path) -> int:
             continue
         run_v6.parse_drawing(q, dst, ckpt, flags, dry)
         if not dry:
-            run_v6.compare_v6(q, dst)
+            (run_v7.compare_v7 if v7 else run_v6.compare_v6)(q, dst)
     if dry:
         return 0
-    print("\n" + "\n".join(run_v6.write_summary(photos, dst, a.low, f"{run_dir.name} on new drawings")))
+    summary = run_v7.write_summary if v7 else run_v6.write_summary
+    print("\n" + "\n".join(summary(photos, dst, a.low, f"{run_dir.name} on new drawings")))
 
     banner("push")
     if a.no_push:
         print("  skipped (--no-push)")
         return 0
     run(["git", "add", dst], dry, cwd=REPO)
-    if run(["git", "commit", "-m", f"v6 on {len(photos)} new drawing(s)"], dry, check=False, cwd=REPO) == 0:
+    if run(["git", "commit", "-m", f"{ver} on {len(photos)} new drawing(s)"], dry, check=False, cwd=REPO) == 0:
         run(["git", "push"], dry, cwd=REPO)
     else:
         print("  nothing new to commit")

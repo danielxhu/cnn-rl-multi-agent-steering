@@ -205,13 +205,15 @@ def examples_figure(ds: SceneDataset, kept: dict, ecfg, path: Path):
 
 def extract_overrides(ecfg, goal_mode=None, heat_thresh=None, heat_nms_factor=None,
                       region_by_agents=None, letter_gate=None, letter_thresh=None, min_box_side=None,
-                      letter_suppress_agents=None):
+                      letter_suppress_agents=None, wall_on_box_tol=None, stub_len=None, line_axis_dev=None):
     """The run's ExtractConfig with the given (non-None) fields replaced."""
     over = {k: v for k, v in dict(goal_mode=goal_mode, heat_thresh=heat_thresh,
                                   heat_nms_factor=heat_nms_factor, region_by_agents=region_by_agents,
                                   letter_gate=letter_gate, letter_thresh=letter_thresh,
                                   min_box_side=min_box_side,
-                                  letter_suppress_agents=letter_suppress_agents).items() if v is not None}
+                                  letter_suppress_agents=letter_suppress_agents,
+                                  wall_on_box_tol=wall_on_box_tol, stub_len=stub_len,
+                                  line_axis_dev=line_axis_dev).items() if v is not None}
     return replace(ecfg, **over) if over else ecfg
 
 
@@ -376,13 +378,16 @@ def main(argv=None):
     g.add_argument("--region-by-agents", action="store_const", const=True, default=None)
     from runconfig import add_letter_flags
     add_letter_flags(g)
+    from runconfig import add_v7_flags
+    add_v7_flags(g)
     p.add_argument("--letter-grid", nargs="+", type=float, default=None,
                    help="letter_thresh values for --tune-extract (default %s; letter head + gate)" % LETTER_GRID)
     a = p.parse_args(argv)
     over = dict(goal_mode=a.goal_mode, heat_thresh=a.heat_thresh, heat_nms_factor=a.heat_nms_factor,
                 region_by_agents=a.region_by_agents, letter_gate=a.letter_gate,
                 letter_thresh=a.letter_thresh, min_box_side=a.min_box_side,
-                letter_suppress_agents=a.letter_suppress_agents)
+                letter_suppress_agents=a.letter_suppress_agents, wall_on_box_tol=a.wall_on_box_tol,
+                stub_len=a.stub_len, line_axis_dev=a.line_axis_dev)
     if a.tune_extract:
         tune_extract(a.ckpt, a.data[0], a.out, a.ring_grid, a.heat_grid, a.limit, a.device, a.batch,
                      nms_grid=a.nms_grid, overrides=over, letter_grid=a.letter_grid)
