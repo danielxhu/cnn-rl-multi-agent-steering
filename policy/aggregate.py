@@ -109,7 +109,7 @@ def write_tables(evals, out: Path):
             continue
         text = (f"# E2: {suite}\n\n" + table(evals, suite, "success_rate", "Success rate")
                 + "\n\n" + table(evals, suite, "collision_rate", "Collision rate") + "\n")
-        (out / fname).write_text(text)
+        (out / fname).write_text(text, encoding="utf-8")   # "±": Windows defaults to GBK
 
 
 def run_dir_of(e, runs_root):
