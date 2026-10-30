@@ -1,0 +1,317 @@
+{
+ "set": "val_sketch7",
+ "n_scenes": 500,
+ "goal_mode": "exits",
+ "results": [
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.2,
+   "agent_f1": 0.9816103474956417,
+   "agent_precision": 0.982718253968254,
+   "agent_recall": 0.983195238095238,
+   "agent_center_err": 0.1532668270913134,
+   "scene_usable": 0.868,
+   "heat_nms_factor": 0.5
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.2,
+   "agent_f1": 0.9816103474956417,
+   "agent_precision": 0.982718253968254,
+   "agent_recall": 0.983195238095238,
+   "agent_center_err": 0.1532668270913134,
+   "scene_usable": 0.868,
+   "heat_nms_factor": 0.6
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.2,
+   "agent_f1": 0.9818325697178638,
+   "agent_precision": 0.9831182539682539,
+   "agent_recall": 0.983195238095238,
+   "agent_center_err": 0.1532668270913134,
+   "scene_usable": 0.87,
+   "heat_nms_factor": 0.8
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.2,
+   "agent_f1": 0.9818325697178638,
+   "agent_precision": 0.9831182539682539,
+   "agent_recall": 0.983195238095238,
+   "agent_center_err": 0.1532668270913134,
+   "scene_usable": 0.87,
+   "heat_nms_factor": 1.0
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.2,
+   "agent_f1": 0.9818325697178638,
+   "agent_precision": 0.9831182539682539,
+   "agent_recall": 0.983195238095238,
+   "agent_center_err": 0.1532668270913134,
+   "scene_usable": 0.87,
+   "heat_nms_factor": 1.2
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.3,
+   "agent_f1": 0.981985015311486,
+   "agent_precision": 0.9846261904761905,
+   "agent_recall": 0.981895238095238,
+   "agent_center_err": 0.15307344435998907,
+   "scene_usable": 0.872,
+   "heat_nms_factor": 0.5
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.3,
+   "agent_f1": 0.981985015311486,
+   "agent_precision": 0.9846261904761905,
+   "agent_recall": 0.981895238095238,
+   "agent_center_err": 0.15307344435998907,
+   "scene_usable": 0.872,
+   "heat_nms_factor": 0.6
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.3,
+   "agent_f1": 0.9822072375337082,
+   "agent_precision": 0.9850261904761904,
+   "agent_recall": 0.981895238095238,
+   "agent_center_err": 0.15307344435998907,
+   "scene_usable": 0.874,
+   "heat_nms_factor": 0.8
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.3,
+   "agent_f1": 0.9822072375337082,
+   "agent_precision": 0.9850261904761904,
+   "agent_recall": 0.981895238095238,
+   "agent_center_err": 0.15307344435998907,
+   "scene_usable": 0.874,
+   "heat_nms_factor": 1.0
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.3,
+   "agent_f1": 0.9822072375337082,
+   "agent_precision": 0.9850261904761904,
+   "agent_recall": 0.981895238095238,
+   "agent_center_err": 0.15307344435998907,
+   "scene_usable": 0.874,
+   "heat_nms_factor": 1.2
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9823206796471502,
+   "agent_precision": 0.9856452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 0.5
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9823206796471502,
+   "agent_precision": 0.9856452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 0.6
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9825429018693724,
+   "agent_precision": 0.9860452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.878,
+   "heat_nms_factor": 0.8
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9825429018693724,
+   "agent_precision": 0.9860452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.878,
+   "heat_nms_factor": 1.0
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9825429018693724,
+   "agent_precision": 0.9860452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.878,
+   "heat_nms_factor": 1.2
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.5,
+   "agent_f1": 0.9815024181700653,
+   "agent_precision": 0.9868198412698411,
+   "agent_recall": 0.9792619047619048,
+   "agent_center_err": 0.1529270622515929,
+   "scene_usable": 0.874,
+   "heat_nms_factor": 0.5
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.5,
+   "agent_f1": 0.9815024181700653,
+   "agent_precision": 0.9868198412698411,
+   "agent_recall": 0.9792619047619048,
+   "agent_center_err": 0.1529270622515929,
+   "scene_usable": 0.874,
+   "heat_nms_factor": 0.6
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.5,
+   "agent_f1": 0.9817246403922875,
+   "agent_precision": 0.9872198412698413,
+   "agent_recall": 0.9792619047619048,
+   "agent_center_err": 0.1529270622515929,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 0.8
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.5,
+   "agent_f1": 0.9817246403922875,
+   "agent_precision": 0.9872198412698413,
+   "agent_recall": 0.9792619047619048,
+   "agent_center_err": 0.1529270622515929,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 1.0
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.5,
+   "agent_f1": 0.9817246403922875,
+   "agent_precision": 0.9872198412698413,
+   "agent_recall": 0.9792619047619048,
+   "agent_center_err": 0.1529270622515929,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 1.2
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.6,
+   "agent_f1": 0.980908167975815,
+   "agent_precision": 0.9879531746031746,
+   "agent_recall": 0.9773095238095239,
+   "agent_center_err": 0.1525535685119145,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 0.5
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.6,
+   "agent_f1": 0.980908167975815,
+   "agent_precision": 0.9879531746031746,
+   "agent_recall": 0.9773095238095239,
+   "agent_center_err": 0.1525535685119145,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 0.6
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.6,
+   "agent_f1": 0.980908167975815,
+   "agent_precision": 0.9879531746031746,
+   "agent_recall": 0.9773095238095239,
+   "agent_center_err": 0.1525535685119145,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 0.8
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.6,
+   "agent_f1": 0.980908167975815,
+   "agent_precision": 0.9879531746031746,
+   "agent_recall": 0.9773095238095239,
+   "agent_center_err": 0.1525535685119145,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 1.0
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.6,
+   "agent_f1": 0.980908167975815,
+   "agent_precision": 0.9879531746031746,
+   "agent_recall": 0.9773095238095239,
+   "agent_center_err": 0.1525535685119145,
+   "scene_usable": 0.876,
+   "heat_nms_factor": 1.2
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9825429018693724,
+   "agent_precision": 0.9860452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.878,
+   "heat_nms_factor": 0.8,
+   "letter_thresh": 0.2,
+   "region_set_ok": 0.952
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9825429018693724,
+   "agent_precision": 0.9860452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.878,
+   "heat_nms_factor": 0.8,
+   "letter_thresh": 0.3,
+   "region_set_ok": 0.952
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9825429018693724,
+   "agent_precision": 0.9860452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.878,
+   "heat_nms_factor": 0.8,
+   "letter_thresh": 0.4,
+   "region_set_ok": 0.952
+  },
+  {
+   "ring_thresh": 0.45,
+   "heat_thresh": 0.4,
+   "agent_f1": 0.9825429018693724,
+   "agent_precision": 0.9860452380952381,
+   "agent_recall": 0.9814952380952382,
+   "agent_center_err": 0.1530435840172996,
+   "scene_usable": 0.878,
+   "heat_nms_factor": 0.8,
+   "letter_thresh": 0.5,
+   "region_set_ok": 0.952
+  }
+ ],
+ "best": {
+  "ring_thresh": 0.45,
+  "heat_thresh": 0.4,
+  "agent_f1": 0.9825429018693724,
+  "agent_precision": 0.9860452380952381,
+  "agent_recall": 0.9814952380952382,
+  "agent_center_err": 0.1530435840172996,
+  "scene_usable": 0.878,
+  "heat_nms_factor": 0.8,
+  "letter_thresh": 0.2,
+  "region_set_ok": 0.952
+ }
+}
