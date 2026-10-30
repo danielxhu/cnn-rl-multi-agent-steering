@@ -96,6 +96,20 @@ class Simulator:
         self._cap_r = np.full(len(self._cap_c), c.wall_half)
         self._wall_lines = [(np.array(s[0]), np.array(s[1])) for s in scene.walls]
 
+        # path-length progress (policy/DESIGN_E3.md §1.2): one field per distinct
+        # goal, all sharing one clearance; None keeps straight-line progress
+        self._geo = None
+        if c.progress_metric == "geodesic":
+            from reachability import clearance, geodesic_field, occupancy
+            clear = clearance(c, occupancy(c, scene))
+            self._geo = {}
+            for a in scene.agents:
+                g = scene.goal_for(a)
+                if g not in self._geo:
+                    self._geo[g] = geodesic_field(c, scene, g, cell=c.geo_cell, clear=clear)
+        elif c.progress_metric != "euclid":
+            raise ValueError(f"progress_metric must be 'euclid' or 'geodesic', not {c.progress_metric!r}")
+
         self.reset()
 
     # -- state ------------------------------------------------------------
@@ -118,6 +132,15 @@ class Simulator:
 
     def _goal(self, i):
         return self.scene.goal_for(self.scene.agents[i])
+
+    def _progress_dist(self, i) -> float:
+        """Distance used by the progress reward: straight line, or path length."""
+        g = self._goal(i)
+        p = tuple(self.pos[i])
+        if self._geo is None:
+            return g.distance_to(p)
+        from reachability import geodesic_distance
+        return geodesic_distance(self.cfg, self._geo[g], p, self.cfg.geo_cell, g)
 
     # -- sensing ----------------------------------------------------------
     def _sector_dirs(self, i):
@@ -218,8 +241,7 @@ class Simulator:
         """
         c = self.cfg
         actions = np.asarray(actions, float).reshape(-1, 2)
-        prev_d = np.array([self._goal(i).distance_to(tuple(self.pos[i]))
-                           for i in range(len(self.pos))])
+        prev_d = np.array([self._progress_dist(i) for i in range(len(self.pos))])
 
         moving = self.active.copy()
         prev_pos = self.pos.copy()
@@ -239,7 +261,7 @@ class Simulator:
             if not moving[i]:
                 continue
             self.trajectories[i].append(tuple(self.pos[i]))
-            d = self._goal(i).distance_to(tuple(self.pos[i]))
+            d = self._progress_dist(i)
             rewards[i] = -c.step_cost + c.progress_weight * (prev_d[i] - d)
 
             static = self._hits_static(i)
@@ -262,6 +284,7 @@ class Simulator:
                 if self.active[i]:
                     self.active[i] = False
                     self.outcome[i] = "timeout"
+                    rewards[i] -= c.timeout_penalty
 
         return self.observe(), rewards, self.done
 

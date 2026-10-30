@@ -10,7 +10,9 @@ Invariants:
   ``n_agents`` are never alive.
 - A transition belongs to a slot only on steps where ``alive`` was True
   *before* the step. ``terminal`` (goal, collision) and ``truncated``
-  (timeout) are mutually exclusive and only set on such steps.
+  (timeout) are mutually exclusive and only set on such steps. With
+  ``timeout_penalty > 0`` a timeout is part of the task and is ``terminal``
+  too (no bootstrap; DESIGN_E3.md §1.1).
 - On the step that ends a scene the env samples the next scene in place and
   returns *its* first observation, with ``first`` set on the filled slots;
   ``final_obs`` still holds the observation of the old scene, which truncated
@@ -195,7 +197,7 @@ class MultiAgentEnv:
         truncated = np.zeros(S, bool)
         for i in range(n):
             if was_alive[i] and not sim.active[i]:
-                if sim.outcome[i] == "timeout":
+                if sim.outcome[i] == "timeout" and self.sim_cfg.timeout_penalty <= 0:
                     truncated[i] = True
                 else:
                     terminal[i] = True

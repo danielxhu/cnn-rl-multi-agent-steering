@@ -17,6 +17,12 @@ Invariants:
   ``Simulator._hits_static`` at the step the agent was removed (the simulator
   gives static hits precedence, and so does this).
 - Episodes are independent, so a process pool changes nothing but speed.
+- Evaluation runs the suite's physics with the *default* reward
+  (DESIGN_E3.md §3.2): the metrics count outcomes, which no reward changes, and
+  no geodesic fields are built. A checkpoint trained on different physics
+  (anything but reward fields and style) is refused.
+- ``metrics.json`` identity carries ``variant``: the run directory's name
+  without ``_seed<k>`` (``greedy`` for the null model).
 """
 from __future__ import annotations
 
@@ -27,6 +33,7 @@ import csv
 import json
 import math
 import multiprocessing as mp
+import re
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +42,7 @@ import torch
 from env import (ObsStack, actions_to_sim, base_obs_dim, obs_dim, to_policy_obs)
 from nets import ActorCritic
 from physics import Simulator, greedy_action
-from policyconfig import RunConfig, sim_config_from_dict
+from policyconfig import RunConfig, default_reward, physics_fields, sim_config_from_dict
 from scene import Scene
 from suites import load_suite
 
@@ -264,6 +271,19 @@ def evaluate_suites(controller_factory, chunk_fn_args, suites: dict, workers: in
     return metrics
 
 
+def variant_of(ckpt_path) -> str:
+    """``E:/policy-runs/e3_geo_seed1/ckpt_best.pt`` -> ``e3_geo``."""
+    return re.sub(r"_seed\d+$", "", Path(ckpt_path).resolve().parent.name)
+
+
+def check_physics(trained_cfg, eval_cfg, ckpt):
+    """Refuse a checkpoint whose physics (not reward, not style) differs from the suite's."""
+    a, b = physics_fields(trained_cfg), physics_fields(eval_cfg)
+    diff = {k: (a[k], b[k]) for k in a.keys() & b.keys() if a[k] != b[k]}
+    if diff:
+        raise SystemExit(f"{ckpt}: trained on different physics than the suite: {diff}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     g = ap.add_mutually_exclusive_group(required=True)
@@ -279,15 +299,17 @@ def main(argv=None):
     suites = {s: a.data_root / s for s in a.suites.split(",")}
     first = json.loads((next(iter(suites.values())) / "suite.json").read_text())
     from dataclasses import asdict
+    sim_cfg = default_reward(sim_config_from_dict(first["sim"]))
     if a.greedy:
-        sim_cfg = sim_config_from_dict(first["sim"])
-        identity = {"controller": "greedy", "seed": None, "ckpt": None}
+        identity = {"controller": "greedy", "variant": "greedy", "seed": None, "ckpt": None}
         factory = GreedyController
-        make_args = lambda dicts: (_greedy_chunk, (dicts, first["sim"]))
+        make_args = lambda dicts: (_greedy_chunk, (dicts, asdict(sim_cfg)))
     else:
-        _, cfg, sim_cfg, ck = load_policy(a.ckpt, not a.stochastic, a.seed)
+        _, cfg, trained_cfg, ck = load_policy(a.ckpt, not a.stochastic, a.seed)
+        check_physics(trained_cfg, sim_cfg, a.ckpt)
         weights = {k: v.numpy() for k, v in ck["model"].items()}
-        identity = {"controller": cfg.net.memory, "seed": cfg.seed, "ckpt": str(a.ckpt),
+        identity = {"controller": cfg.net.memory, "variant": variant_of(a.ckpt),
+                    "seed": cfg.seed, "ckpt": str(a.ckpt), "reward": cfg.reward,
                     "iteration": ck.get("iteration"), "agent_steps": ck.get("agent_steps"),
                     "deterministic": not a.stochastic}
         factory = lambda: PolicyController(cfg, weights, not a.stochastic, a.seed)

@@ -845,6 +845,177 @@ def test_scene_without_starts():
     assert len(back.agents) == 3 and is_solvable(cfg, back)
 
 
+# ------------------------------------------------- reward (policy/DESIGN_E3.md §5)
+
+# Recorded with the code *before* E3 touched physics.py (28 Oct 2026): summed
+# greedy reward per agent, outcomes and episode length on three fixed scenes.
+DEFAULT_REWARD_REFERENCE = {
+    (101, "open"): ([106.750515, 106.616914, 107.312716, -47.6],
+                    ["goal", "goal", "goal", "collision"], 31),
+    (102, "doorway"): ([-46.64, -47.36, -47.616051, 106.742908],
+                       ["collision", "collision", "collision", "goal"], 29),
+    (103, "cul_de_sac"): ([-48.8, -46.64, -48.8, 107.190178],
+                          ["collision", "collision", "collision", "goal"], 31),
+}
+
+
+@test
+def test_default_reward_unchanged():
+    cfg = Config()
+    assert cfg.timeout_penalty == 0.0 and cfg.progress_metric == "euclid"
+    for (seed, layout), (want, outcomes, steps) in DEFAULT_REWARD_REFERENCE.items():
+        scene = random_scene(np.random.default_rng(seed), cfg, layout=layout, n_agents=4,
+                             n_obstacles=2)
+        sim = Simulator(scene, cfg)
+        total = np.zeros(4)
+        done = sim.done
+        while not done:
+            _, r, done = sim.step(np.stack([greedy_action(sim, i) for i in range(4)]))
+            total += r
+        assert np.allclose(total, want, atol=1e-5), (layout, total, want)
+        assert sim.outcome == outcomes and sim.steps == steps, (layout, sim.outcome, sim.steps)
+
+
+def _region_dist_grid(field, goal, cell=1.0):
+    m = field.shape[0]
+    c = (np.arange(m) + 0.5) * cell
+    px, py = np.meshgrid(c, c)
+    d = np.full(field.shape, np.inf)
+    for r in (goal.regions if hasattr(goal, "regions") else [goal]):
+        dx = np.maximum(np.maximum(r.x0 - px, px - r.x1), 0.0)
+        dy = np.maximum(np.maximum(r.y0 - py, py - r.y1), 0.0)
+        d = np.minimum(d, np.hypot(dx, dy))
+    return d
+
+
+@test
+def test_geodesic_open_equals_euclid():
+    from reachability import geodesic_field
+    cfg = Config()
+    for seed in (0, 1, 2):
+        scene = random_scene(np.random.default_rng(seed), cfg, layout="open", n_agents=4,
+                             n_obstacles=0)
+        assert not scene.obstacles
+        field = geodesic_field(cfg, scene, scene.goal_region)
+        fin = np.isfinite(field)
+        assert fin.mean() > 0.6, "most of an open world is reachable"
+        err = np.abs(field - _region_dist_grid(field, scene.goal_region))[fin]
+        assert err.max() <= 1.5, err.max()
+
+
+def _doorway_scene(goal):
+    w = boundary_walls(100.0) + [((50.0, 0.0), (50.0, 40.0)), ((50.0, 50.0), (50.0, 100.0))]
+    return Scene(walls=w, goal_region=goal, start_region=Region(5, 5, 20, 95),
+                 agents=[Agent((30.0, 20.0), 0.0)], layout="doorway")
+
+
+def _over_the_cap(a, q, c, r):
+    """Shortest path a -> q round the far side of the disk (c, r), both points below a
+    wall that ends in that disk: tangent, arc over the top (the reflex angle), tangent."""
+    a, q, c = np.asarray(a, float), np.asarray(q, float), np.asarray(c, float)
+    da, dq = np.hypot(*(a - c)), np.hypot(*(q - c))
+    ang = math.acos(np.clip(np.dot(a - c, q - c) / (da * dq), -1, 1))
+    arc = (2 * math.pi - ang) - math.acos(r / da) - math.acos(r / dq)
+    return math.sqrt(da * da - r * r) + math.sqrt(dq * dq - r * r) + r * arc
+
+
+@test
+def test_geodesic_goes_round_a_wall():
+    from reachability import geodesic_distance, geodesic_field
+    cfg = Config()
+    goal = Region(80.0, 10.0, 95.0, 30.0)
+    scene = _doorway_scene(goal)
+    field = geodesic_field(cfg, scene, goal)
+    a = (30.0, 20.0)
+    got = geodesic_distance(cfg, field, a)
+    # by hand: round the wall's end cap at (50, 40), kept at radius + half thickness
+    r = cfg.agent_radius + cfg.wall_half
+    edge = [(80.0, y) for y in np.linspace(10, 30, 81)] + [(x, 30.0) for x in np.linspace(80, 95, 61)]
+    want = min(_over_the_cap(a, q, (50.0, 40.0), r) for q in edge)
+    assert abs(got - want) <= 2.0, (got, want)
+    assert got > goal.distance_to(a) + 8.0, (got, goal.distance_to(a))
+
+
+@test
+def test_geodesic_line_sweeps_equal_plain_relaxation():
+    """The fast field (segmented scans along lines) has the fixed point of the
+    obvious 32-neighbour relaxation, which is pinned here as the reference."""
+    import reachability as R
+    cfg = Config()
+    rng = np.random.default_rng(4)
+    for layout in ("cul_de_sac", "boxrooms", "crossing"):
+        scene = random_scene(rng, cfg, layout=layout, n_agents=4, n_obstacles=3)
+        goal = scene.goal_for(scene.agents[0])
+        fast = R.geodesic_field(cfg, scene, goal).astype(np.float64)
+        free = R._coarse_free(cfg, scene, cfg.agent_radius, 1.0)
+        m, P = free.shape[0], R._GEO_PAD
+        d = _region_dist_grid(fast, goal)
+        D = np.where(free & (d <= 1.0), d, np.inf)
+        fp = np.zeros((m + 2 * P, m + 2 * P), bool)
+        fp[P:P + m, P:P + m] = free
+        steps = []
+        for dy, dx, c, crossed in R._GEO_MOVES:            # move from p - (dy, dx) into p
+            ok = free & fp[P - dy:P - dy + m, P - dx:P - dx + m]
+            for cy, cx in crossed:
+                ok &= fp[P - cy:P - cy + m, P - cx:P - cx + m]
+            steps.append((dy, dx, np.where(ok, c, np.inf)))
+        while True:
+            Dp = np.full((m + 2 * P, m + 2 * P), np.inf)
+            Dp[P:P + m, P:P + m] = D
+            new = D.copy()
+            for dy, dx, add in steps:
+                new = np.minimum(new, Dp[P - dy:P - dy + m, P - dx:P - dx + m] + add)
+            if not (new < D - 1e-9).any():
+                break
+            D = new
+        assert (np.isfinite(fast) == np.isfinite(D)).all(), layout
+        fin = np.isfinite(D)
+        assert np.abs(fast[fin] - D[fin]).max() < 1e-4, layout
+
+
+@test
+def test_geodesic_progress_rewards_backing_out():
+    from dataclasses import replace
+    # a pocket open to the left, its closed end towards the goal on the right
+    pocket = [((40.0, 60.0), (70.0, 60.0)), ((40.0, 40.0), (70.0, 40.0)),
+              ((70.0, 40.0), (70.0, 60.0))]
+    goal = Region(85.0, 40.0, 95.0, 60.0)
+    scene = Scene(walls=boundary_walls(100.0) + pocket, goal_region=goal,
+                  start_region=Region(45, 45, 65, 55),
+                  agents=[Agent((55.0, 50.0), math.pi)], layout="cul_de_sac")
+    step_out = np.array([[0.0, 1.0]])                       # straight on (left), full speed
+    rewards = {}
+    for metric in ("euclid", "geodesic"):
+        sim = Simulator(scene, replace(Config(), progress_metric=metric))
+        _, r, _ = sim.step(step_out)
+        assert sim.active[0], "no collision while stepping out"
+        rewards[metric] = float(r[0])
+    assert goal.distance_to((52.5, 50.0)) > goal.distance_to((55.0, 50.0))
+    assert rewards["euclid"] < 0 < rewards["geodesic"], rewards
+
+
+@test
+def test_timeout_penalty_once():
+    from dataclasses import replace
+    goal = Region(85.0, 40.0, 95.0, 60.0)
+    agents = [Agent((83.5, 50.0), 0.0), Agent((20.0, 20.0), 0.0), Agent((20.0, 80.0), 0.0)]
+    scene = Scene(walls=boundary_walls(100.0), goal_region=goal,
+                  start_region=Region(10, 10, 30, 90), agents=agents)
+    act = np.array([[0.0, 1.0], [0.0, 0.0], [0.0, 0.0]])    # agent 0 walks in, others stand
+    for pen in (0.0, 25.0):
+        sim = Simulator(scene, replace(Config(), max_steps=3, timeout_penalty=pen))
+        rs = []
+        done = False
+        while not done:
+            _, r, done = sim.step(act)
+            rs.append(r)
+        rs = np.array(rs)
+        assert sim.outcome == ["goal", "timeout", "timeout"], sim.outcome
+        assert sim.finish_step[0] == 1 and (rs[1:, 0] == 0).all(), "finished: nothing more"
+        for i in (1, 2):
+            assert np.allclose(rs[:2, i], -0.01) and abs(rs[2, i] - (-0.01 - pen)) < 1e-12, rs[:, i]
+
+
 def main():
     if "--write-hashes" in sys.argv:
         write_reference_hashes()

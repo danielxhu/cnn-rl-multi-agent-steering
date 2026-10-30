@@ -8,6 +8,9 @@ Invariants:
   load), so a ``config.json`` fully describes a run.
 - ``EnvConfig.memory`` and ``NetConfig.memory`` must agree; ``RunConfig``
   keeps them in sync (``RunConfig.make``).
+- ``RunConfig.reward`` holds overrides of the simulator's reward fields
+  (``REWARD_FIELDS``, DESIGN_E3.md §3.2); ``{}`` is E2's default reward. It is
+  the only way a run changes the simulator, and it is saved with the run.
 """
 from __future__ import annotations
 
@@ -18,6 +21,10 @@ from pathlib import Path
 LAYOUTS_E2 = ("open", "corridor", "room", "doorway", "two_doorway", "cul_de_sac",
               "crossing", "boxrooms", "walls_multi", "rooms_multi")
 MEMORIES = ("mlp", "stack", "gru")
+# sim Config fields that shape the reward only (never the observation or the
+# dynamics): a run may override them, evaluation always resets them
+REWARD_FIELDS = ("goal_bonus", "collision_penalty", "agent_collision_penalty", "step_cost",
+                 "progress_weight", "timeout_penalty", "progress_metric", "geo_cell")
 
 
 @dataclass
@@ -69,12 +76,13 @@ class RunConfig:
     seed: int = 0
     val_every: int = 25
     ckpt_every: int = 25
+    reward: dict = field(default_factory=dict)      # sim reward overrides (E3)
 
     @staticmethod
-    def make(memory="gru", seed=0, **ppo_overrides) -> "RunConfig":
+    def make(memory="gru", seed=0, reward=None, **ppo_overrides) -> "RunConfig":
         ppo = PPOConfig(**ppo_overrides)
         return RunConfig(env=EnvConfig(memory=memory), net=NetConfig(memory=memory),
-                         ppo=ppo, seed=seed)
+                         ppo=ppo, seed=seed, reward=dict(reward or {}))
 
     def to_dict(self, sim_cfg=None) -> dict:
         d = asdict(self)
@@ -91,7 +99,8 @@ class RunConfig:
             return cls(**kw)
         return RunConfig(env=build(EnvConfig, d["env"]), net=build(NetConfig, d["net"]),
                          ppo=build(PPOConfig, d["ppo"]), seed=d["seed"],
-                         val_every=d.get("val_every", 25), ckpt_every=d.get("ckpt_every", 25))
+                         val_every=d.get("val_every", 25), ckpt_every=d.get("ckpt_every", 25),
+                         reward=dict(d.get("reward") or {}))
 
     def save(self, path, sim_cfg=None):
         Path(path).write_text(json.dumps(self.to_dict(sim_cfg), indent=2))
@@ -111,9 +120,34 @@ def sim_config_from_dict(d: dict):
                                   for k, v in d.items()})
 
 
-def sim_config() -> "Config":
-    """The simulator config used by E2: defaults, collisions terminate the agent."""
+def sim_config(reward=None) -> "Config":
+    """The simulator config of a run: defaults, collisions terminate the agent,
+    plus the run's reward overrides (``RunConfig.reward``)."""
+    from dataclasses import replace
     from config import Config
     cfg = Config()
     assert cfg.terminate_on_collision, "E2 needs terminate_on_collision=True"
+    if reward:
+        unknown = set(reward) - set(REWARD_FIELDS)
+        if unknown:
+            raise ValueError(f"not reward fields of sim Config: {sorted(unknown)}")
+        cfg = replace(cfg, **reward)
     return cfg
+
+
+def default_reward(sim_cfg) -> "Config":
+    """``sim_cfg`` with every reward field back at its default: the physics alone.
+
+    Evaluation metrics count outcomes, which the reward never changes, so every
+    controller is evaluated on this (and no geodesic fields are built)."""
+    from dataclasses import replace
+    from config import Config
+    base = Config()
+    return replace(sim_cfg, **{k: getattr(base, k) for k in REWARD_FIELDS})
+
+
+def physics_fields(sim_cfg) -> dict:
+    """The fields of a sim Config that are not reward or rendering style."""
+    from dataclasses import asdict
+    d = asdict(sim_cfg) if not isinstance(sim_cfg, dict) else dict(sim_cfg)
+    return {k: v for k, v in d.items() if k not in REWARD_FIELDS and k != "style"}

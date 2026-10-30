@@ -217,7 +217,14 @@ ray points dead ahead. Obstacles (r ≥ 4) and walls are always seen;
 
 **Reward:** `+goal_bonus` on arrival, `-collision_penalty` (wall/obstacle) or
 `-agent_collision_penalty`, `-step_cost` per step, `+progress_weight ×`
-goal-distance decrease.
+goal-distance decrease, and `-timeout_penalty` once for an agent still active
+at `max_steps` (default 0). `progress_metric` picks the distance:
+`"euclid"` (default, straight line to the goal region) or `"geodesic"`, the
+length of the shortest path a disk of `agent_radius` can walk round walls and
+obstacles (`reachability.geodesic_field`, one field per goal on a
+`geo_cell` = 1.0 grid, built when the `Simulator` is created). Arrival is
+`goal.contains` either way; the observation does not change
+(policy/DESIGN_E3.md §1).
 
 **Collision:** decided for every agent from the same post-step state before
 anyone is removed, so a contact between two agents hits both, whatever their

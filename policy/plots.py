@@ -4,8 +4,11 @@ Owns the four figures; each function takes plain Python / numpy data and a
 target path and writes a PNG.
 
 Invariants:
-- Controller colours are fixed across figures: greedy grey, mlp blue, gru orange
-  (colour-blind safe), so a reader never has to re-learn the legend.
+- Colours are fixed across figures: greedy grey, mlp blue, gru orange
+  (colour-blind safe), so a reader never has to re-learn the legend. E3
+  variants: e2_gru keeps gru's orange, the e3 variants get their own.
+- Every function takes ``order``, the series to draw and their order (default:
+  greedy, mlp, gru); a series missing from the data is skipped.
 - World -> pixel for paths follows ``render``: ``px = x * scale``,
   ``py = (world - y) * scale`` (image row 0 is the top of the world).
 - No display is needed (Agg backend).
@@ -22,8 +25,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-COLORS = {"greedy": "#7f7f7f", "mlp": "#1f77b4", "gru": "#ff7f0e"}
+COLORS = {"greedy": "#7f7f7f", "mlp": "#1f77b4", "gru": "#ff7f0e",
+          "e2_gru": "#ff7f0e", "e3_timeout": "#2ca02c", "e3_geo": "#1f77b4",
+          "e3_both": "#9467bd"}
 ORDER = ["greedy", "mlp", "gru"]
+_SPARE = ["#8c564b", "#e377c2", "#17becf", "#bcbd22", "#d62728"]
+
+
+def color(name: str, k: int = 0) -> str:
+    return COLORS.get(name, _SPARE[k % len(_SPARE)])
 
 
 def _style(ax):
@@ -31,10 +41,10 @@ def _style(ax):
     ax.grid(axis="y", alpha=0.25)
 
 
-def training_curves(curves: dict, path):
-    """curves: {memory: [(agent_steps array, success array), ...] one per seed}."""
+def training_curves(curves: dict, path, order=None):
+    """curves: {series: [(agent_steps array, success array), ...] one per seed}."""
     fig, ax = plt.subplots(figsize=(6.4, 4))
-    for mem in ("mlp", "gru"):
+    for k, mem in enumerate(order or ("mlp", "gru")):
         runs = curves.get(mem) or []
         if not runs:
             continue
@@ -42,8 +52,8 @@ def training_curves(curves: dict, path):
         grid = np.linspace(0, top, 100)
         ys = np.stack([np.interp(grid, r[0], r[1]) for r in runs])
         mu, sd = ys.mean(0), ys.std(0)
-        ax.plot(grid / 1e6, mu, color=COLORS[mem], label=f"{mem} (n={len(runs)})")
-        ax.fill_between(grid / 1e6, mu - sd, mu + sd, color=COLORS[mem], alpha=0.2)
+        ax.plot(grid / 1e6, mu, color=color(mem, k), label=f"{mem} (n={len(runs)})")
+        ax.fill_between(grid / 1e6, mu - sd, mu + sd, color=color(mem, k), alpha=0.2)
     ax.set_xlabel("agent-steps (millions)")
     ax.set_ylabel("validation success rate")
     ax.set_ylim(0, 1)
@@ -54,16 +64,17 @@ def training_curves(curves: dict, path):
     plt.close(fig)
 
 
-def per_layout_bars(values: dict, layouts: list, path, title="test4: success per layout"):
-    """values: {controller: {layout: [per-seed success, ...]}}."""
-    ctrls = [c for c in ORDER if c in values]
+def per_layout_bars(values: dict, layouts: list, path, title="test4: success per layout",
+                    order=None):
+    """values: {series: {layout: [per-seed success, ...]}}."""
+    ctrls = [c for c in (order or ORDER) if c in values]
     fig, ax = plt.subplots(figsize=(max(7, 0.9 * len(layouts)), 4))
     w = 0.8 / max(1, len(ctrls))
     for k, c in enumerate(ctrls):
         mu = [np.mean(values[c].get(l, [np.nan])) for l in layouts]
         sd = [np.std(values[c].get(l, [np.nan])) for l in layouts]
         ax.bar(np.arange(len(layouts)) + (k - (len(ctrls) - 1) / 2) * w, mu, w,
-               yerr=sd, color=COLORS[c], label=c, capsize=2)
+               yerr=sd, color=color(c, k), label=c, capsize=2)
     ax.set_xticks(range(len(layouts)))
     ax.set_xticklabels(layouts, rotation=30, ha="right")
     ax.set_ylabel("success rate")
@@ -76,13 +87,14 @@ def per_layout_bars(values: dict, layouts: list, path, title="test4: success per
     plt.close(fig)
 
 
-def bottleneck_curves(values: dict, bins: list, path, title="test4: success vs bottleneck width"):
-    """values: {controller: {bin: [per-seed success]}}; bins in display order."""
+def bottleneck_curves(values: dict, bins: list, path, title="test4: success vs bottleneck width",
+                      order=None):
+    """values: {series: {bin: [per-seed success]}}; bins in display order."""
     fig, ax = plt.subplots(figsize=(6, 4))
-    for c in [c for c in ORDER if c in values]:
+    for k, c in enumerate([c for c in (order or ORDER) if c in values]):
         mu = np.array([np.mean(values[c].get(b, [np.nan])) for b in bins])
         sd = np.array([np.std(values[c].get(b, [np.nan])) for b in bins])
-        ax.errorbar(range(len(bins)), mu, yerr=sd, color=COLORS[c], marker="o", capsize=3,
+        ax.errorbar(range(len(bins)), mu, yerr=sd, color=color(c, k), marker="o", capsize=3,
                     label=c)
     ax.set_xticks(range(len(bins)))
     ax.set_xticklabels(bins)
@@ -97,7 +109,7 @@ def bottleneck_curves(values: dict, bins: list, path, title="test4: success vs b
     plt.close(fig)
 
 
-def path_panels(panels: list, layouts: list, sim_cfg, path):
+def path_panels(panels: list, layouts: list, sim_cfg, path, order=None):
     """panels: {layout: {"scene": Scene, "paths": {controller: record}}}.
 
     record = {"trajectories": [[(x, y), ...] per agent], "collision_pos": [...]}.
@@ -116,17 +128,17 @@ def path_panels(panels: list, layouts: list, sim_cfg, path):
             continue
         img, _ = render(item["scene"], sim_cfg)
         ax.imshow(np.asarray(img))
-        for c in ORDER:
+        for k, c in enumerate(order or ORDER):
             rec = item["paths"].get(c)
             if rec is None:
                 continue
             for k, tr in enumerate(rec["trajectories"]):
                 xy = np.array(tr)
-                ax.plot(xy[:, 0] * sc, (sim_cfg.world - xy[:, 1]) * sc, color=COLORS[c],
+                ax.plot(xy[:, 0] * sc, (sim_cfg.world - xy[:, 1]) * sc, color=color(c, k),
                         lw=1.3, alpha=0.9, label=c if k == 0 else None)
             for cp in rec["collision_pos"]:
                 if cp is not None:
-                    ax.plot(cp[0] * sc, (sim_cfg.world - cp[1]) * sc, "x", color=COLORS[c],
+                    ax.plot(cp[0] * sc, (sim_cfg.world - cp[1]) * sc, "x", color=color(c, k),
                             ms=7, mew=2)
         ax.set_title(layout, fontsize=10)
     handles, labels = axes[0, 0].get_legend_handles_labels()

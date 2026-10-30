@@ -16,6 +16,9 @@ Invariants:
   so each iteration appears exactly once.
 - A finished run (agent-steps >= budget) exits at once on ``--resume``.
 - Ctrl-C saves ``ckpt_last.pt``, shuts the workers down and exits with 130.
+- The reward is part of the run (``RunConfig.reward``, DESIGN_E3.md §3.2):
+  ``sim_cfg`` must carry it, ``--resume`` takes it from the checkpoint, and
+  validation runs the default-reward physics (outcomes do not depend on it).
 """
 from __future__ import annotations
 
@@ -35,8 +38,8 @@ import torch
 from env import obs_dim
 from evaluate import ROW_METRICS
 from nets import ActorCritic
-from policyconfig import (LAYOUTS_E2, EnvConfig, PPOConfig, RunConfig, sim_config,
-                          sim_config_from_dict)
+from policyconfig import (LAYOUTS_E2, EnvConfig, PPOConfig, RunConfig, default_reward,
+                          sim_config, sim_config_from_dict)
 from ppo import RewardScaler, gae, replay, update
 from rollout import WorkerPool
 
@@ -145,6 +148,8 @@ def run(cfg: RunConfig, sim_cfg, out: Path, val_suite: Path | None = None, resum
         stop_after: int | None = None) -> dict:
     """Train until the budget is spent (or ``stop_after`` iterations, for tests)."""
     out.mkdir(parents=True, exist_ok=True)
+    for k, v in cfg.reward.items():
+        assert getattr(sim_cfg, k) == v, f"sim_cfg.{k} = {getattr(sim_cfg, k)!r}, run says {v!r}"
     p = cfg.ppo
     device = resolve_device(p.device)
     torch.manual_seed(cfg.seed)
@@ -173,7 +178,7 @@ def run(cfg: RunConfig, sim_cfg, out: Path, val_suite: Path | None = None, resum
     validator = None
     if val_suite is not None:
         from evaluate import Validator
-        validator = Validator(val_suite, sim_cfg, val_workers)
+        validator = Validator(val_suite, default_reward(sim_cfg), val_workers)
     best = None
     if best_path.exists():
         best = load_ckpt(best_path).get("val")
@@ -271,6 +276,10 @@ def build_parser():
     ap.add_argument("--val-every", type=int, default=None)
     ap.add_argument("--ckpt-every", type=int, default=None)
     ap.add_argument("--check-replay-every", type=int, default=25)
+    ap.add_argument("--timeout-penalty", type=float, default=None,
+                    help="sim reward: charged once at a timeout (E3 uses 25)")
+    ap.add_argument("--progress-metric", choices=["euclid", "geodesic"], default=None,
+                    help="sim reward: distance of the progress term")
     ap.add_argument("--stop-after", type=int, default=None, help="iterations, for smoke runs")
     for f in fields(PPOConfig):
         flag = "--" + f.name.replace("_", "-")
@@ -293,6 +302,12 @@ def config_from_args(a) -> RunConfig:
         if getattr(a, k) is not None:
             env[k] = getattr(a, k)
     cfg = replace(cfg, ppo=replace(cfg.ppo, **ppo), env=replace(cfg.env, **env))
+    reward = {}
+    if a.timeout_penalty is not None:
+        reward["timeout_penalty"] = a.timeout_penalty
+    if a.progress_metric is not None:
+        reward["progress_metric"] = a.progress_metric
+    cfg = replace(cfg, reward=reward)
     if a.val_every:
         cfg = replace(cfg, val_every=a.val_every)
     if a.ckpt_every:
@@ -303,16 +318,20 @@ def config_from_args(a) -> RunConfig:
 def main(argv=None):
     a = build_parser().parse_args(argv)
     cfg = config_from_args(a)
-    sim_cfg = sim_config()
+    sim_cfg = sim_config(cfg.reward)
     if a.resume and (a.out / "ckpt_last.pt").exists():
         ck = load_ckpt(a.out / "ckpt_last.pt")
         saved = RunConfig.from_dict(ck["config"])
         sim_cfg = sim_config_from_dict(ck["config"]["sim"])
-        # the run is defined by its checkpoint; only the budget, the machine
-        # (workers, device) and the validation cadence may change on resume
+        # the run is defined by its checkpoint, reward included; only the budget
+        # and the machine (workers, device) may change on resume
         over = {k: getattr(a, k) for k in ("total_steps", "W", "device")
                 if getattr(a, k, None) is not None}
         cfg = replace(saved, ppo=replace(saved.ppo, **over))
+        asked = config_from_args(a).reward
+        if any(saved.reward.get(k) != v for k, v in asked.items()):
+            print(f"note: --resume keeps the checkpoint's reward {saved.reward}, "
+                  f"not {asked}", flush=True)
     run(cfg, sim_cfg, a.out, a.val_suite, a.resume, a.val_workers,
         a.check_replay_every, stop_after=a.stop_after)
 

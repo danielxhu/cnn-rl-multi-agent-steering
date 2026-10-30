@@ -65,11 +65,11 @@ robot needs a map.
 **The field.** New in `sim/reachability.py`:
 
 ```python
-def geodesic_field(cfg, scene, goal, radius=None, cell=1.0) -> np.ndarray:
+def geodesic_field(cfg, scene, goal, radius=None, cell=1.0, clear=None) -> np.ndarray:
     """(m, m) float32: path length (world units) from each cell centre to `goal`
     (a Region or RegionSet) for a disk of `radius` (default cfg.agent_radius);
     inf where unreachable. Grid convention as the module's (row 0 = bottom)."""
-def geodesic_distance(cfg, field, p, cell=1.0) -> float:
+def geodesic_distance(cfg, field, p, cell=1.0, goal=None) -> float:
     """Bilinear lookup of `field` at world point p; see the fallbacks below."""
 ```
 
@@ -79,18 +79,26 @@ def geodesic_distance(cfg, field, p, cell=1.0) -> float:
   cells is). Max-pooling keeps narrow passages open (the narrowest legal
   passage, 5.2, leaves a free band of 1.2); it cannot leak through a wall
   or an obstacle, whose blocked bands are ≥ 7 wide.
-- Sources: coarse free cells whose centre lies in the goal region, or in any
-  member of a `RegionSet`, at distance 0.
-- Propagation: 8-connected, step costs `cell` and `√2·cell`, iterated as a
-  numpy wavefront (repeated `minimum` over the 8 shifted copies) until no cell
-  changes. No scipy, no Python loop over cells. Target: under 30 ms per field
-  on the Mac.
+- Sources: coarse free cells within one `cell` of the goal region (or of any
+  member of a `RegionSet`), at their exact straight-line distance to it (0
+  inside). Seeding only the cells inside adds up to a cell of error.
+- Propagation: moves to every primitive offset up to (3, 2) (32 directions,
+  at most 18.4° apart: error ≤ 1.3 % against the true path length; 8-connected
+  moves overestimate by up to 8 %, 7 units across the world, which test 2
+  would fail), cost = offset length × `cell`. A move is legal only if every
+  cell its segment crosses is free. Relaxed as a numpy wavefront along lines:
+  for each of the 16 line directions, a segmented running minimum
+  (`np.minimum.accumulate`) along every chain of cells, both orientations,
+  repeated until no cell changes (typically 5–8 sweeps). No scipy, no Python
+  loop over cells; the fixed point equals plain 32-neighbour relaxation
+  (pinned by a test). `clear` lets several goals of one scene share one
+  `clearance`. Target: under 30 ms per field on the Mac (measured: §9).
 - Lookup: bilinear interpolation of the 4 surrounding cell centres, using only
   finite neighbours (re-normalised weights). If all 4 are infinite (the agent
   is pressed against an obstacle, inside the pooled boundary), use the
   smallest finite value in the 5 × 5 neighbourhood plus the straight-line
   distance to that cell's centre; if that is infinite too, fall back to the
-  straight-line distance to the goal.
+  straight-line distance to `goal` (inf when no `goal` is passed).
 
 **In the simulator.** `Simulator.__init__` builds one field per distinct goal
 of the scene (one for single-goal and exit-set scenes, two for `crossing`),
@@ -137,8 +145,8 @@ With the defaults the simulator must behave exactly as before (§5 test 1).
 | `policyconfig.py` | `RunConfig.reward: dict` (overrides of sim `Config` reward fields, default `{}`), saved in `config.json` and the checkpoint; `sim_config(reward=None)` applies them |
 | `env.py` | timeouts are `terminal` when `timeout_penalty > 0` (§1.1) |
 | `train.py` | flags `--timeout-penalty`, `--progress-metric`; `--resume` keeps the checkpoint's reward |
-| `evaluate.py` | evaluation always runs the default-reward physics (metrics do not depend on the reward; asserts the physics fields match the checkpoint's); writes `variant` = run name without `_seed<k>` into the identity of `metrics.json` |
-| `aggregate.py` | `--group variant` groups by that identity instead of `controller`; `--variants` fixes column order; E2 behaviour unchanged by default |
+| `evaluate.py` | evaluation always runs the suite's physics with the default reward (metrics do not depend on the reward; refuses a checkpoint whose non-reward, non-style fields differ from the suite's); writes `variant` = run name without `_seed<k>` (and the run's `reward`) into the identity of `metrics.json` |
+| `aggregate.py` | `--group variant` groups by that identity instead of `controller` (evaluations without `variant`, from E2, use the directory name without `_seed<k>`); `--variants` fixes column order; `--tag` names the tables (`e2` / `e3`); with `--group variant` also the timeout table and `winner.json`; E2 behaviour unchanged by default |
 | `scripts/run_e3.py` | the driver, §4 |
 
 ## 4. Driver (`scripts/run_e3.py`, resumable, same style as `run_e2.py`)
@@ -154,8 +162,9 @@ cd policy && python scripts/run_e3.py
 3. evaluation of each on `test4` and `test_mixed` → `E:\policy-eval\<run>`;
 4. `aggregate.py --group variant --variants greedy e2_gru e3_timeout e3_geo e3_both`
    over `E:\policy-eval` → `policy/results/e3`;
-5. `git pull --rebase`, then add, commit and push `policy/results/e3`
-   (`--no-push` skips; nothing to commit ends cleanly).
+5. `git pull --rebase --autostash`, then add, commit and push
+   `policy/results/e3` (`--no-push` skips the pull and the push; nothing to
+   commit ends cleanly).
 
 Flags as `run_e2.py`: `--data-root`, `--runs`, `--eval`, `--seeds`,
 `--variants`, `--total-steps`, `--workers`, `--eval-workers`, `--no-push`,
@@ -181,6 +190,8 @@ Simulator (`sim/tests/run_tests.py`):
 5. `test_timeout_penalty_once` — `max_steps` tiny: every agent active at the
    end receives exactly `−timeout_penalty` once on top of its step reward;
    agents finished earlier receive nothing.
+5b. `test_geodesic_line_sweeps_equal_plain_relaxation` — on three generated
+   scenes the field equals the fixed point of plain 32-neighbour relaxation.
 
 Policy (`policy/tests/run_tests.py`):
 
@@ -229,3 +240,14 @@ convenience, log every deviation). Differences for this task:
 
 Filled in by the implementing agent: one line per deviation — what, why,
 which section was updated.
+
+- Field moves reach (3, 2) (32 directions) instead of 8-connected: the octile metric is up to 8 % long, so test 2 (within 1.5 units) cannot hold over a 100-unit world. Relaxation runs as segmented running minima along lines instead of 8 shifted copies, to keep the field near the time target. [§1.2]
+- Sources are the free cells within one cell of the goal at their exact distance, not only the cells inside at 0 (that alone is up to a cell off). [§1.2]
+- `geodesic_field(…, clear=None)` and `geodesic_distance(…, goal=None)`: one clearance per scene for all its goals; the goal is needed for the last fallback. [§1.2]
+- Timing on the Mac (M-series, 30 generated scenes over the ten layouts): wavefront 25.7 ms mean, 37.8 ms max per field given the clearance; 40.5 ms mean with the module's `occupancy` + `clearance` (~15 ms, once per scene). The target holds on average for the field itself, not with the rasterisation included. [§1.2]
+- Added sim test 5b (fast field = plain relaxation). [§5]
+- Validation inside `train.py` also runs the default-reward physics, like evaluation (same outcomes, no fields built). `--resume` with reward flags that differ from the checkpoint prints a note and keeps the checkpoint's reward. [§3.2]
+- `policyconfig.sim_config(reward)` rejects keys that are not reward fields (`REWARD_FIELDS`); added `default_reward` and `physics_fields`. [§3.2]
+- `evaluate.py` checks the checkpoint's physics against the suite's (common keys, reward fields and style excluded); identity also records `reward`. [§3.2]
+- `aggregate.py`: `--tag`; timeout table and `winner.json` (plus every variant's validation score under `all`) only with `--group variant`; the E3 path figure shows `e2_gru` and the winner (greedy instead if `e2_gru` wins). [§3.2, §6]
+- `run_e3.py`: `--no-push` also skips the pull; the pull uses `--autostash`. [§4]

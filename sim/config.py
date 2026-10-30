@@ -84,6 +84,9 @@ class Config:
     step_cost: float = 0.01
     progress_weight: float = 0.1
     terminate_on_collision: bool = True         # False: count collisions, keep stepping
+    timeout_penalty: float = 0.0                # charged once to agents still active at max_steps
+    progress_metric: str = "euclid"             # "euclid" | "geodesic" (path length round walls)
+    geo_cell: float = 1.0                       # geodesic field cell, world units
 
     # --- agent spawn spacing ---------------------------------------------
     agent_gap: float = 1.5                      # extra clearance beyond 2 * agent_radius

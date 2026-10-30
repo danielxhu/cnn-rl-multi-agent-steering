@@ -518,6 +518,112 @@ def test_15_update_is_finite_with_tiny_minibatches():
     assert all(torch.isfinite(p).all() for p in net.parameters())
 
 
+# ------------------------------------------------- E3: reward (DESIGN_E3.md §5)
+
+@test
+def test_e3_6_timeout_terminal_with_penalty():
+    still = np.full((8, 2), -1.0)                          # speed -> 0: everyone times out
+    for pen, want in ((0.0, "truncated"), (25.0, "terminal")):
+        cfg = replace(Config(), max_steps=3, timeout_penalty=pen)
+        e = envmod.MultiAgentEnv(EnvConfig(), cfg, np.random.default_rng(6))
+        e.reset()
+        n0 = e.n
+        for _ in range(3):
+            r = e.step(still)
+        other = "terminal" if want == "truncated" else "truncated"
+        assert r[want][:n0].all() and not r[other].any(), (pen, r[want], r[other])
+        if want == "terminal":
+            assert not r["final_obs"].any(), "no bootstrap for a penalised timeout"
+            assert np.allclose(r["reward"][:n0], -0.01 - pen)
+        else:
+            assert (r["final_obs"][:n0] != 0).any(axis=1).all()
+
+
+@test
+def test_e3_7_reward_config_roundtrip():
+    import torch  # noqa: F401
+    import train
+    from policyconfig import RunConfig, sim_config
+    cfg = RunConfig.make("gru", 0, reward={"timeout_penalty": 25.0, "progress_metric": "geodesic"})
+    sc = sim_config(cfg.reward)
+    assert sc.timeout_penalty == 25.0 and sc.progress_metric == "geodesic"
+    try:
+        sim_config({"max_speed": 9.0})
+        raise AssertionError("a physics field must not pass as a reward override")
+    except ValueError:
+        pass
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        cfg.save(d / "config.json", sc)
+        back = RunConfig.load(d / "config.json")
+        assert back.reward == cfg.reward and back == cfg
+        out = d / "run"
+        common = ["--memory", "gru", "--out", str(out), "--layouts", "open", "--agents", "2", "3",
+                  "--W", "0", "--E", "2", "--T", "16", "--L", "16", "--total-steps", "1000000",
+                  "--stop-after", "1"]
+        train.main(common + ["--timeout-penalty", "25", "--progress-metric", "geodesic"])
+        ck = train.load_ckpt(out / "ckpt_last.pt")
+        assert ck["config"]["reward"] == {"timeout_penalty": 25.0, "progress_metric": "geodesic"}
+        assert ck["config"]["sim"]["timeout_penalty"] == 25.0
+        assert ck["config"]["sim"]["progress_metric"] == "geodesic"
+        # --resume without the reward flags keeps the checkpoint's reward
+        train.main(common + ["--resume"])
+        ck = train.load_ckpt(out / "ckpt_last.pt")
+        assert ck["iteration"] == 2 and ck["config"]["reward"]["timeout_penalty"] == 25.0
+        assert ck["config"]["sim"]["progress_metric"] == "geodesic"
+        assert RunConfig.load(out / "config.json").reward == cfg.reward
+
+
+@test
+def test_e3_8_variant_grouping():
+    import contextlib
+    import io
+    import json
+    import aggregate
+    import evaluate
+    rng = np.random.default_rng(8)
+
+    def fake_rows():
+        return [{"layout": l, "bottleneck": 8.0, **{k: float(rng.random()) for k in evaluate.ROW_METRICS}}
+                for l in ("open", "doorway") for _ in range(3)]
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        for name, ident in (("greedy", {"controller": "greedy", "variant": "greedy", "seed": None}),
+                            ("e3_geo_seed0", {"controller": "gru", "variant": "e3_geo", "seed": 0}),
+                            ("e3_geo_seed1", {"controller": "gru", "variant": "e3_geo", "seed": 1}),
+                            ("e2_gru_seed0", {"controller": "gru", "seed": 0})):   # pre-E3: no variant
+            run = d / "runs" / name
+            ckpt = None
+            if name != "greedy":
+                run.mkdir(parents=True)
+                ckpt = str(run / "ckpt_best.pt")
+                (run / "val.csv").write_text(
+                    "iteration,agent_steps,success_rate,collision_rate\n"
+                    f"25,1000,{0.5 + 0.2 * ident['seed']},0.3\n50,2000,0.6,0.2\n")
+            (d / "eval" / name).mkdir(parents=True)
+            metrics = {"identity": {**ident, "ckpt": ckpt},
+                       "suites": {"test4": evaluate.metrics_for(fake_rows())}}
+            (d / "eval" / name / "metrics.json").write_text(json.dumps(metrics))
+        res = d / "res"
+        with contextlib.redirect_stdout(io.StringIO()):
+            aggregate.main(["--evals", str(d / "eval"), "--out", str(res), "--runs", str(d / "runs"),
+                            "--group", "variant", "--variants", "greedy", "e2_gru", "e3_geo"])
+        text = (res / "table_e3.md").read_text(encoding="utf-8")
+        header = [l for l in text.splitlines() if l.startswith("| layout")][0]
+        assert header == "| layout | greedy | e2_gru | e3_geo |", header
+        assert "e3_geo 2" in text and "Timeout rate" in text
+        win = json.loads((res / "winner.json").read_text())
+        assert win["variant"] == "e3_geo" and win["seeds"] == [0, 1], win
+        assert abs(win["val_success_mean"] - 0.65) < 1e-9         # best rows 0.6 and 0.7
+        # the default grouping still gives the E2 columns
+        with contextlib.redirect_stdout(io.StringIO()):
+            aggregate.main(["--evals", str(d / "eval"), "--out", str(d / "res2")])
+        header = [l for l in (d / "res2" / "table_e2.md").read_text(encoding="utf-8").splitlines()
+                  if l.startswith("| layout")][0]
+        assert header == "| layout | greedy | gru |", header
+
+
 def main():
     only = sys.argv[1:]
     failed = 0
