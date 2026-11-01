@@ -1,0 +1,50 @@
+{
+  "variant": "e3_both",
+  "val_success_mean": 0.8946805555555556,
+  "val_collision_mean": 0.07462698412698411,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "all": {
+    "e2_gru": {
+      "val_success_mean": 0.8789809523809524,
+      "val_collision_mean": 0.08401071428571429,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "e3_both": {
+      "val_success_mean": 0.8946805555555556,
+      "val_collision_mean": 0.07462698412698411,
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    },
+    "e3_geo": {
+      "val_success_mean": 0.8880674603174604,
+      "val_collision_mean": 0.0667579365079365,
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    },
+    "e3_timeout": {
+      "val_success_mean": 0.8897718253968255,
+      "val_collision_mean": 0.07426785714285715,
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    }
+  }
+}
