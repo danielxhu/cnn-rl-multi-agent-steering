@@ -1206,6 +1206,349 @@ def test_e4_8_aggregate_reports_held_out_scenes_only():
         import aggregate
         assert not [e for e in aggregate.load_evals(ev) if e["name"].startswith("e4_")]
 
+# ------------------------------------------------------------ behaviour gap
+
+GAP_CKPT = Path(__file__).resolve().parents[1] / "models" / "e3_both_seed0" / "ckpt_best.pt"
+
+
+def gap_fixture(root: Path, n=6, set_name="set_a"):
+    """A set whose parses copy the true scene, but scene 0 failed and scene 1 has no exit."""
+    import csv
+    import json
+    import gap as gapmod
+    cfg = Config()
+    rng = np.random.default_rng(5)
+    data, parsed, perc = root / "data" / set_name, root / "parsed" / set_name, root / "perc" / set_name
+    for d in (data, parsed, perc):
+        d.mkdir(parents=True)
+    (data / "dataset.json").write_text(json.dumps({"config": {"world": cfg.world}}))
+    rows = []
+    for i in range(n):
+        stem = f"scene_{i:05d}"
+        scene = random_scene(rng, cfg, layout="room", n_agents=3, n_obstacles=1)
+        d = scene.as_dict(cfg, stem)
+        (data / f"{stem}.json").write_text(json.dumps(d))
+        if i == 0:
+            rec = {"id": stem, "parsed": False, "parse_fail": True}
+        else:
+            rec = dict(d, layout=None, bottleneck=None, parsed=True)
+            if i == 1:
+                rec.update(goal_region=None, exits=None, groups=[])
+        (parsed / f"{stem}.json").write_text(json.dumps(rec))
+        rows.append({"set": set_name, "scene": stem, "parse_fail": float(i == 0),
+                     "n_pred_agents": 0 if i == 0 else 3,
+                     **{k: 0.9 + 0.01 * i for k in gapmod.PERCEPTION}})
+    with open(perc / "per_scene.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    (perc / "metrics.json").write_text(json.dumps(
+        {"_meta": {"ckpt": "models\\sketch7\\ckpt_best.pt", "extract": {"heat_thresh": 0.4}}}))
+    return ["--ckpt", str(GAP_CKPT), "--data-root", str(root / "data"), "--parsed", str(root / "parsed"),
+            "--perception", str(root / "perc"), "--sets", set_name, "--out", str(root / "out")]
+
+
+@test
+def test_gap_block_keeps_failed_parses_out_of_the_gap():
+    from gap import block
+    nan = float("nan")
+    ok = {"parse_ok": 1.0, "true_success": 1.0, "parsed_success": 0.5, "gap_success": -0.5,
+          "true_collision": 0.0, "parsed_collision": 0.5, "gap_collision": 0.5,
+          "true_timeout": 0.0, "parsed_timeout": 0.0, "gap_timeout": 0.0}
+    plus = dict(ok, true_success=0.5, parsed_success=1.0, gap_success=0.5, true_collision=0.5,
+                parsed_collision=0.0, gap_collision=-0.5)
+    bad = {k: nan for k in ok}
+    bad.update(parse_ok=0.0, true_success=0.0, true_collision=1.0, true_timeout=0.0)
+    b = block([ok, plus, bad])
+    assert (b["scenes"], b["parsed_scenes"], b["failed_parses"]) == (3, 2, 1)
+    assert b["true_success"] == 0.75                       # the scenes with a parse only
+    assert abs(b["true_all_success"] - 0.5) < 1e-12        # all three
+    assert b["gap_success"] == 0.0 and b["abs_gap_success"] == 0.5   # opposite errors cancel
+    assert b["end_to_end_success"] == 0.5                  # (0.5 + 1.0 + 0) / 3
+    assert b["true_success_on_failed"] == 0.0
+
+
+@test
+def test_gap_identical_parse_has_no_gap_and_failures_are_reported():
+    import gap as gapmod
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        args = gap_fixture(root)
+        gapmod.main(args)
+        rows = gapmod.numeric(gapmod.read_rows(root / "out" / "per_scene.csv"))
+        assert len(rows) == 6
+        assert rows[0]["parse_ok"] == 0 and "not parsed" in rows[0]["parse_reason"]
+        assert rows[1]["parse_ok"] == 0 and "no exit" in rows[1]["parse_reason"]
+        for r in rows[:2]:                                 # the true episode still ran
+            assert not math.isnan(r["true_success"]) and math.isnan(r["parsed_success"])
+        for r in rows[2:]:                                 # same scene, deterministic policy
+            assert r["parse_ok"] == 1 and r["gap_success"] == r["gap_collision"] == r["gap_timeout"] == 0
+        assert sum(r["parse_differs"] for r in rows) == 0
+        text = (root / "out" / "gap.md").read_text(encoding="utf-8")
+        assert "## Failed parses" in text and "| set_a | 6 | 2 | 0.333 |" in text
+        assert "no exit" in text
+        assert (root / "out" / "fig_gap.png").stat().st_size > 0
+        # another parse must not extend these rows
+        meta = root / "perc" / "set_a" / "metrics.json"
+        meta.write_text(meta.read_text().replace("0.4", "0.5"))
+        try:
+            gapmod.main(args)
+        except SystemExit as e:
+            assert "another policy or parse" in str(e)
+        else:
+            raise AssertionError("a run of another parse was accepted")
+
+
+@test
+def test_gap_refuses_a_set_with_other_physics():
+    import json
+    import gap as gapmod
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        args = gap_fixture(root, n=3)
+        (root / "data" / "set_a" / "dataset.json").write_text(json.dumps({"config": {"max_speed": 9.0}}))
+        try:
+            gapmod.main(args)
+        except SystemExit as e:
+            assert "max_speed" in str(e)
+        else:
+            raise AssertionError("other physics were accepted")
+
+
+@test
+def test_gap_resumes_after_a_kill():
+    import subprocess
+    import time
+    import gap as gapmod
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        args = gap_fixture(root, n=16)
+        csv_path = root / "out" / "per_scene.csv"
+        here = Path(__file__).resolve().parents[1]
+        proc = subprocess.Popen([sys.executable, "gap.py", *args], cwd=here,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        t0 = time.time()
+        while proc.poll() is None and time.time() - t0 < 120:
+            if csv_path.exists() and len(csv_path.read_text().splitlines()) >= 4:
+                proc.kill()                                # this test's own child, no one else's
+                break
+            time.sleep(0.02)
+        proc.wait()
+        before = len(gapmod.read_rows(csv_path))
+        assert before >= 3
+        with open(csv_path, "a") as fh:                    # as if killed in the middle of a line
+            fh.write("set_a,scene_99999,room,0")
+        gapmod.main(args)
+        rows = gapmod.read_rows(csv_path)
+        assert [r["scene"] for r in rows] == [f"scene_{i:05d}" for i in range(16)]
+        fresh = root / "fresh"
+        gapmod.main(args[:-1] + [str(fresh)])              # a clean run gives the same rows
+        assert gapmod.read_rows(fresh / "per_scene.csv") == rows
+
+
+def _orca_map_scene():
+    from scene import Agent, Obstacle, Region, Scene, boundary_walls
+    return Scene(walls=boundary_walls(100.0) + [((50.0, 20.0), (50.0, 80.0))],
+                 obstacles=[Obstacle((40.0, 42.0), 3.0)],
+                 agents=[Agent((30.0, 50.0), 0.0, goal_region=Region(70.0, 46.0, 78.0, 54.0)),
+                         Agent((30.0, 35.0), 0.3, goal_region=Region(70.0, 30.0, 78.0, 38.0)),
+                         Agent((70.0, 65.0), math.pi, goal_region=Region(22.0, 60.0, 30.0, 68.0))],
+                 goal_region=Region(70.0, 46.0, 78.0, 54.0), start_region=Region(1, 1, 99, 99))
+
+
+def _orca_map_run(scene, mode="path", **kw):
+    from orca import ORCAController
+    sim = Simulator(scene, Config())
+    ctrl = ORCAController(mode, **kw)
+    ctrl.reset(sim)
+    obs = sim.observe()
+    while not sim.done:
+        obs, _, _ = sim.step(ctrl.act(sim, obs))
+    return sim, ctrl
+
+
+@test
+def test_orca_default_behaviour_matches_the_recorded_baseline():
+    """Numbers recorded from orca.py before ``map_scene`` existed (commit eacc889)."""
+    for mode, steps, outcome, final in (
+            ("straight", 11, ["collision"] * 3,
+             [[46.701, 43.892], [46.673, 28.89], [53.368, 70.956]]),
+            ("path", 34, ["goal"] * 3,
+             [[70.62, 53.075], [71.625, 30.908], [29.185, 67.162]])):
+        sim, _ = _orca_map_run(_orca_map_scene(), mode)
+        assert sim.steps == steps and sim.outcome == outcome, (mode, sim.steps, sim.outcome)
+        assert np.allclose(sim.pos, final, atol=2e-3), (mode, sim.pos)
+
+
+@test
+def test_orca_map_scene_equal_to_the_world_changes_nothing():
+    scene = _orca_map_scene()
+    a, _ = _orca_map_run(scene)
+    b, _ = _orca_map_run(scene, map_scene=_orca_map_scene())
+    assert a.trajectories == b.trajectories and a.outcome == b.outcome
+
+
+@test
+def test_orca_wrong_map_keeps_the_true_world_and_goals():
+    from dataclasses import replace as dc_replace
+    from scene import boundary_walls
+    scene = _orca_map_scene()
+    # the map misses the wall: agents head straight through it and hit the real one
+    sim, ctrl = _orca_map_run(scene, map_scene=dc_replace(scene, walls=boundary_walls(100.0)))
+    assert sim.outcome == ["collision"] * 3, sim.outcome
+    assert all(sim._hits_static(i) for i in range(3))
+    assert ctrl.no_path_steps == 0
+    # the map closes the wall to the world's edges: no route, so the straight bearing
+    closed = dc_replace(scene, walls=scene.walls + [((50.0, 0.0), (50.0, 100.0))])
+    sim, ctrl = _orca_map_run(scene, map_scene=closed)
+    assert ctrl.no_path_steps > 0
+    assert ctrl.goals == [a.goal_region for a in scene.agents]    # goals stay the world's
+    # the map invents an obstacle: planning avoids it, physics does not know it
+    from scene import Obstacle
+    ghost = dc_replace(scene, obstacles=scene.obstacles + [Obstacle((60.0, 50.0), 4.0)])
+    sim, ctrl = _orca_map_run(scene, map_scene=ghost)
+    assert len(sim._obs_c) == 1 and len(ctrl.obs_c) == 2
+
+
+@test
+def test_gap_orca_arms_on_an_identical_map_have_no_gap():
+    import gap as gapmod
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        gapmod.main(gap_fixture(root))
+        rows = gapmod.numeric(gapmod.read_rows(root / "out" / "per_scene.csv"))
+        for r in rows[:2]:                                 # failed parse: only the true ORCA run
+            assert not math.isnan(r["orca_true_success"])
+            assert math.isnan(r["orca_parsed_success"]) and math.isnan(r["orca_wrongmap_success"])
+            assert math.isnan(r["map_gap_success"])
+        for r in rows[2:]:
+            for m in gapmod.GAP_METRICS:
+                assert r[f"orca_gap_{m}"] == 0 and r[f"map_gap_{m}"] == 0, (r["scene"], m)
+            assert r["wrongmap_no_path_agents"] == 0 and r["orca_error"] == ""
+        text = (root / "out" / "gap.md").read_text(encoding="utf-8")
+        assert "## Arm 2" in text and "| set_a | orca_path | 4 |" in text
+        assert (root / "out" / "fig_gap_map.png").stat().st_size > 0
+
+
+@test
+def test_gap_wrong_map_without_a_route_is_recorded_not_dropped():
+    import json
+    import gap as gapmod
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        args = gap_fixture(root, n=4)
+        p = root / "parsed" / "set_a" / "scene_00002.json"
+        rec = json.loads(p.read_text())
+        x0, y0, x1, y1 = rec["goal_region"]
+        ring = [[x0 - 1, y0 - 1], [x1 + 1, y0 - 1], [x1 + 1, y1 + 1], [x0 - 1, y1 + 1]]
+        rec["walls"] += [[ring[i], ring[(i + 1) % 4]] for i in range(4)]    # walls round the exit
+        p.write_text(json.dumps(rec))
+        gapmod.main(args)
+        rows = {r["scene"]: r for r in gapmod.numeric(gapmod.read_rows(root / "out" / "per_scene.csv"))}
+        r = rows["scene_00002"]
+        assert r["parse_ok"] == 1 and r["wrongmap_no_path_agents"] > 0 and r["wrongmap_no_path_steps"] > 0
+        assert not math.isnan(r["orca_wrongmap_success"]) and r["orca_error"] == ""
+        assert rows["scene_00003"]["wrongmap_no_path_agents"] == 0
+        assert "no path at start" in (root / "out" / "gap.md").read_text(encoding="utf-8")
+
+
+@test
+def test_gap_orca_error_leaves_the_policy_row_standing():
+    import gap as gapmod
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        args = gap_fixture(root, n=3)
+        keep = gapmod.ORCAController
+        def broken(*a, **k):
+            raise RuntimeError("boom")
+        gapmod.ORCAController = broken
+        try:
+            gapmod.main(args)
+        finally:
+            gapmod.ORCAController = keep
+        rows = gapmod.numeric(gapmod.read_rows(root / "out" / "per_scene.csv"))
+        assert all("boom" in r["orca_error"] for r in rows)
+        assert rows[2]["parse_ok"] == 1 and not math.isnan(rows[2]["parsed_success"])
+        assert "3 scene(s) with an error in an ORCA run" in (root / "out" / "gap.md").read_text(encoding="utf-8")
+
+
+@test
+def test_gap_refuses_rows_from_before_the_orca_arms():
+    import json
+    import gap as gapmod
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        args = gap_fixture(root, n=3)
+        gapmod.main(args)
+        out = root / "out"
+        identity = json.loads((out / "identity.json").read_text())
+        for key in ("arms", "orca_sha256"):                # an older run's identity, or another orca.py
+            old = {k: v for k, v in identity.items() if k != key}
+            (out / "identity.json").write_text(json.dumps(old))
+            try:
+                gapmod.main(args)
+            except SystemExit as e:
+                assert "another policy or parse" in str(e)
+            else:
+                raise AssertionError(f"identity without {key} was accepted")
+        # same identity but the old columns: also refused, the file left alone
+        (out / "identity.json").write_text(json.dumps(identity))
+        old_columns = [c for c in gapmod.COLUMNS if "orca" not in c and "map" not in c]
+        (out / "per_scene.csv").write_text(",".join(old_columns) + "\n")
+        before = (out / "per_scene.csv").read_text()
+        try:
+            gapmod.main(args)
+        except SystemExit as e:
+            assert "other columns" in str(e)
+        else:
+            raise AssertionError("old columns were accepted")
+        assert (out / "per_scene.csv").read_text() == before
+
+
+@test
+def test_gap_driver_dry_run_prints_the_windows_commands():
+    import contextlib
+    import io
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import run_gap
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_gap.main(["--dry-run"])
+    text = buf.getvalue()
+    flags = "--heat-thresh 0.4 --heat-nms-factor 0.8 --letter-thresh 0.2"
+    for s in run_gap.SETS:
+        assert f"--dir E:\\cnn-data\\{s} --out E:\\policy-eval\\gap\\sketch7\\parsed\\{s} {flags}" in text
+        assert f"--data E:\\cnn-data\\{s} --out E:\\policy-eval\\gap\\sketch7\\perception\\{s} --no-figures {flags}" in text
+    assert "gap.py --ckpt" in text and "--data-root E:\\cnn-data" in text and "--workers 6" in text
+    assert "git pull --rebase --autostash" in text and "git push" in text
+    assert '"Behaviour gap: e3_both_seed0 on true vs parsed scenes"' in text
+
+
+@test
+def test_gap_driver_end_to_end_on_cpu():
+    """Real sketch scenes, the real perception model, spawn workers, then a run that skips it all."""
+    import subprocess
+    import gap as gapmod
+    here = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        subprocess.run([sys.executable, "generate.py", "--n", "3", "--out", str(root / "data" / "test_sketch7"),
+                        "--layout", "mixed5", "--agents", "1-8", "--obstacles", "0-6", "--style", "sketch7",
+                        "--seed", "370"], cwd=here.parent / "sim", check=True, stdout=subprocess.DEVNULL)
+        cmd = [sys.executable, "scripts/run_gap.py", "--data-root", str(root / "data"),
+               "--work", str(root / "work"), "--sets", "test_sketch7", "--limit", "2", "--workers", "2",
+               "--device", "cpu"]
+        subprocess.run(cmd, cwd=here, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        out = root / "work" / "sketch7" / "smoke" / "e3_both_seed0"
+        rows = gapmod.read_rows(out / "per_scene.csv")
+        assert [r["scene"] for r in rows] == ["scene_00001", "scene_00002"]
+        assert all(r["parse_differs"] == "0" for r in rows)
+        for f in ("gap.md", "metrics.json", "fig_gap.png", "identity.json"):
+            assert (out / f).exists(), f
+        again = subprocess.run(cmd, cwd=here, check=True, capture_output=True, text=True).stdout
+        assert "parsed, skipped" in again and "scored, skipped" in again
+        assert "2 already done, 0 to run" in again
+
 
 def main():
     only = sys.argv[1:]
