@@ -1,0 +1,40 @@
+{
+ "policy": "e3_both_seed0",
+ "policy_sha256": "91086ff70c9865f8",
+ "deterministic": true,
+ "arms": [
+  "policy_true",
+  "policy_parsed",
+  "orca_path_true",
+  "orca_path_parsed",
+  "orca_path_wrong_map"
+ ],
+ "orca_sha256": "202eeeebb597f174",
+ "perception_ckpt": "sketch7",
+ "extract": {
+  "ring_thresh": 0.45,
+  "nms_factor": 1.6,
+  "heat_thresh": 0.4,
+  "poly_eps_px": 1.5,
+  "min_wall_area_px": 25,
+  "min_region_area_px": 100,
+  "wall_mode": "lines",
+  "line_tol": 1.5,
+  "line_min_len": 2.0,
+  "line_join": 4.0,
+  "line_overshoot": 6.0,
+  "line_axis_deg": 10.0,
+  "line_border": 3.0,
+  "line_border_reach": 4.5,
+  "region_by_agents": true,
+  "heat_nms_factor": 0.8,
+  "goal_mode": "exits",
+  "letter_gate": true,
+  "letter_thresh": 0.2,
+  "letter_suppress_agents": true,
+  "min_box_side": 3.0,
+  "wall_on_box_tol": 1.5,
+  "stub_len": 3.0,
+  "line_axis_dev": 2.0
+ }
+}
