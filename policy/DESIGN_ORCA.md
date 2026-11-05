@@ -32,7 +32,7 @@ avoidance shows what the ray observation costs.
 | Variant | Preferred velocity |
 |---|---|
 | `orca_straight` | full speed toward the nearest point of the goal (the straight-line bearing the policy sees) |
-| `orca_path` | full speed along the shortest path: the direction, among 32 evenly spaced ones, whose point at distance `max_speed` has the lowest `geodesic_distance` (`sim/reachability.py`, E3); the straight bearing when that point is inside the goal |
+| `orca_path` | full speed along the shortest path: the direction, among 32 evenly spaced ones, whose point at distance `max_speed` has the lowest path distance (bilinear on the `geodesic_field` of E3, finite corners only; §8); the straight bearing when that point is inside the goal, or when no candidate has a finite value |
 
 `orca_straight` is the fair comparison (same goal information). `orca_path`
 is how ORCA is used in practice, with a global planner on a map: the
@@ -54,7 +54,10 @@ third-party code copied. Units: world units and steps (`dt = 1`).
    is within `neighbor_dist`.
 5. **Half-planes** (§2.2), then the **linear program** (§2.3): the velocity
    closest to `v_pref` inside every half-plane and within `|v| ≤ max_speed`.
-6. **Action** from the chosen velocity (§2.4).
+6. **Symmetry breaker**: if the chosen velocity is slower than half of
+   `|v_pref|`, solve again with `v_pref` turned 30° to the right
+   (pass-on-the-right) and use that answer (§8).
+7. **Action** from the chosen velocity (§2.4).
 
 All agents are computed from the same state, then stepped together, as the
 simulator requires.
@@ -97,6 +100,9 @@ turn  = clip(e / max_turn, −1, 1)
 speed = clip(|v*| · max(0, cos e) / max_speed, 0, 1)     # slow down while turning; stop when facing away
 ```
 
+With `|v*| ≈ 0` the direction is undefined: the agent turns toward `v_pref`
+at speed 0.
+
 Actions are passed in the policy's action units through the same mapping the
 evaluation uses for greedy (`(turn, speed)` straight to `Simulator.step`).
 
@@ -109,7 +115,10 @@ class ORCAController:                           # evaluate.py's controller proto
     def reset(self, sim)                        # caches geometry; for "path" one geodesic field per goal
     def act(self, sim, obs51) -> np.ndarray     # (n, 2) actions for all agents (inactive rows ignored)
 def orca_velocity(p, v, v_pref, neighbors, statics, cfg, params) -> np.ndarray   # one agent, pure function
-def linear_program(lines, radius, v_pref) -> np.ndarray                          # §2.3, pure function
+def linear_program(lines, radius, v_pref, n_hard=0) -> np.ndarray                # §2.3, pure function
+# lines: [(point, unit direction)], permitted side = left of the direction (RVO2 convention);
+# the first n_hard lines (static) stay hard in the 3-D fallback
+def velocity_to_action(v_star, heading, v_pref, cfg) -> np.ndarray               # §2.4
 ```
 
 ## 3. Evaluation and reporting
@@ -124,6 +133,8 @@ def linear_program(lines, radius, v_pref) -> np.ndarray                         
   exist; `--variants` still fixes the order explicitly.
 - `fig_paths.png` keeps its three controllers by default; `--path-variants`
   chooses them (e.g. `orca_straight mlp gru`).
+- `aggregate.py --include REGEX` keeps only evaluation directories whose name
+  matches; `run_orca.py` uses it for the E2 re-aggregation (§8).
 - `scripts/run_orca.py` (resumable): evaluate both variants on `test4` and
   `test_mixed` into `E:\policy-eval\orca_straight` / `orca_path` (skip if
   present); re-aggregate E2 into `policy/results/e2` with the ORCA columns
@@ -199,3 +210,11 @@ per second, one process); the divergence log; every file created or changed.
 
 Filled in by the implementing agent: one line per deviation — what, why,
 which section was updated.
+
+- **Symmetry breaker added.** Exactly symmetric encounters (head-on into a disk's centre; four agents swapping across a point) put the LP optimum on the axis: velocities stay on it and the agents decelerate to a halt (test 3 timed out; so did test 4 before). A small fixed rotation of `v_pref` (2°, the deterministic version of RVO2's random perturbation) did not leave the optimum's vertex. Keeping the better of the straight and the rotated answer by progress did not either: on the axis the straight one always wins slightly. Final rule: slower than half of `|v_pref|` → re-solve with `v_pref` turned 30° right and use it. [§2.1 step 6]
+- `linear_program(lines, radius, v_pref, n_hard=0)`: the 3-D fallback needs to know which lines are hard (static); lines use RVO2's `(point, direction)` form, permitted side on the left, rather than `(point, normal)`. [§2.5]
+- `velocity_to_action` is a named function (test 6 calls it); with `|v*| ≈ 0` the agent turns toward `v_pref` at speed 0 instead of an undefined direction. [§2.4, §2.5]
+- `orca_path` scores candidates with its own bilinear lookup of the geodesic field using finite corners only, not `reachability.geodesic_distance`: that function's 5 × 5 fallback can lend a candidate inside a wall the value of the wall's far side, which would point the agent through the wall. All candidates infinite → straight bearing. [§1]
+- `aggregate.py --include REGEX`: on the training machine `E:\policy-eval` holds E2 and E3 runs, and under `--group controller` the E3 runs (controller `gru`) would join E2's `gru` column; `run_orca.py` re-aggregates E2 with `--include "^(greedy|orca_(straight|path)|e2_(mlp|gru)_seed\d+)$"`. Default (no `--include`) is unchanged. [§3]
+- `run_orca.py` first checks that the suites exist; `--no-push` also skips the pull; the pull uses `--autostash` (as `run_e3.py`). [§3]
+- `fig_paths.png` default series are now named explicitly (`greedy mlp gru`) instead of "every column", so adding ORCA columns does not add ORCA paths. Same figure as before when there is no ORCA. [§3]

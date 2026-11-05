@@ -19,6 +19,13 @@ Invariants:
   groups are left out of tables and figures (not of the summaries).
 - The E3 winner is chosen on *validation* (``val.csv`` of the runs, best row
   per run as ``ckpt_best.pt``), never on the test suites.
+- Non-learned controllers (``NON_LEARNED``: greedy and the two ORCA variants,
+  DESIGN_ORCA.md §3) are one run each: no seed spread, no training curve, never
+  a winner; under ``--group controller`` each is its own column (both ORCA
+  variants share the controller name ``orca``).
+- ``--include`` keeps only evaluation directories whose name matches a regular
+  expression: an evaluation root that holds E2 and E3 runs would otherwise put
+  the E3 ``gru`` runs into E2's ``gru`` column.
 - Tables are mean ± std over seeds (population std); greedy has one run and is
   shown without a spread.
 - Missing pieces (no gru runs yet, no trajectories) skip what needs them
@@ -42,12 +49,17 @@ from evaluate import BOTTLENECK_BINS, ROW_METRICS
 from policyconfig import LAYOUTS_E2
 from scene import Scene
 
-CTRLS = ["greedy", "mlp", "gru"]
+NON_LEARNED = {"greedy", "orca_straight", "orca_path"}
+# E2 column order; columns without evaluations are simply absent
+CTRLS = ["greedy", "orca_straight", "orca_path", "mlp", "gru"]
+E2_PATH_SERIES = ["greedy", "mlp", "gru"]           # fig_paths default (DESIGN_ORCA.md §3)
 
 
-def load_evals(root: Path, group: str = "controller") -> list:
+def load_evals(root: Path, group: str = "controller", include: str | None = None) -> list:
     out = []
     for m in sorted(root.glob("*/metrics.json")):
+        if include is not None and not re.search(include, m.parent.name):
+            continue
         data = json.loads(m.read_text(encoding="utf-8"))
         ident = data["identity"]
         variant = ident.get("variant") or ("greedy" if ident["controller"] == "greedy"
@@ -55,7 +67,7 @@ def load_evals(root: Path, group: str = "controller") -> list:
         e = {"dir": m.parent, "name": m.parent.name, "controller": ident["controller"],
              "variant": variant, "seed": ident.get("seed"), "ckpt": ident.get("ckpt"),
              "suites": data["suites"]}
-        e["group"] = e[group]
+        e["group"] = e["variant"] if e["variant"] in NON_LEARNED else e[group]
         out.append(e)
     return out
 
@@ -142,7 +154,7 @@ def run_dir_of(e, runs_root):
 
 def val_rows(e, runs_root) -> list:
     d = run_dir_of(e, runs_root)
-    if e["controller"] == "greedy" or d is None or not (d / "val.csv").exists():
+    if e["group"] in NON_LEARNED or d is None or not (d / "val.csv").exists():
         return []
     with open(d / "val.csv", newline="") as fh:
         return list(csv.DictReader(fh))
@@ -157,7 +169,7 @@ def training_curves(evals, runs_root, out: Path, order=None):
                 (np.array([float(r["agent_steps"]) for r in rows]),
                  np.array([float(r["success_rate"]) for r in rows])))
     if curves:
-        series = [g for g in (order or ["mlp", "gru"]) if g != "greedy"]
+        series = [g for g in (order or ["mlp", "gru"]) if g not in NON_LEARNED]
         plots.training_curves(curves, out / "fig_training_curves.png", series)
 
 
@@ -168,7 +180,7 @@ def pick_winner(evals, runs_root, order) -> dict | None:
     one ``ckpt_best.pt`` was saved at."""
     per = {}
     for e in evals:
-        if e["group"] == "greedy" or e["group"] not in order:
+        if e["group"] in NON_LEARNED or e["group"] not in order:
             continue
         rows = val_rows(e, runs_root)
         if not rows:
@@ -194,7 +206,7 @@ def path_figure(evals, out: Path, groups=None):
     for e in evals:
         if groups is not None and e["group"] not in groups:
             continue
-        if e["group"] == "greedy" or e["seed"] == 0:
+        if e["group"] in NON_LEARNED or e["seed"] == 0:
             pick[e["group"]] = e
     panels = {}
     for c, e in pick.items():
@@ -216,17 +228,22 @@ def main(argv=None):
     ap.add_argument("--runs", type=Path, default=None)
     ap.add_argument("--group", choices=["controller", "variant"], default="controller")
     ap.add_argument("--variants", nargs="+", default=None,
-                    help="columns and their order (default: greedy mlp gru, or every variant)")
+                    help="columns and their order (default: greedy orca_straight orca_path mlp gru, "
+                         "or every variant)")
+    ap.add_argument("--path-variants", nargs="+", default=None,
+                    help="series of fig_paths.png (default: greedy mlp gru; E3: e2_gru and the winner)")
+    ap.add_argument("--include", default=None,
+                    help="regular expression on evaluation directory names (default: all)")
     ap.add_argument("--tag", default=None, help="table names: table_<tag>.md (default e2 / e3)")
     a = ap.parse_args(argv)
-    evals = load_evals(a.evals, a.group)
+    evals = load_evals(a.evals, a.group, a.include)
     if not evals:
         raise SystemExit(f"no evaluation directories (metrics.json) under {a.evals}")
     by_variant = a.group == "variant"
     if a.variants:
         order = list(a.variants)
     elif by_variant:
-        order = sorted({e["group"] for e in evals}, key=lambda g: (g != "greedy", g))
+        order = sorted({e["group"] for e in evals}, key=lambda g: (g not in NON_LEARNED, g))
     else:
         order = list(CTRLS)
     tag = a.tag or ("e3" if by_variant else "e2")
@@ -252,9 +269,9 @@ def main(argv=None):
                   f"collision {win['val_collision_mean']:.3f}  seeds {win['seeds']}")
         # E3 path figure: the default reward against the winner (DESIGN_E3.md §6)
         pair = ["e2_gru"] + ([win["variant"]] if win and win["variant"] != "e2_gru" else ["greedy"])
-        path_figure(shown, a.out, pair)
+        path_figure(shown, a.out, a.path_variants or pair)
     else:
-        path_figure(shown, a.out)
+        path_figure(shown, a.out, a.path_variants or E2_PATH_SERIES)
     print(f"wrote {sorted(p.name for p in a.out.iterdir())} to {a.out}")
 
 

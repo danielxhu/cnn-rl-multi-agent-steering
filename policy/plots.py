@@ -6,7 +6,8 @@ target path and writes a PNG.
 Invariants:
 - Colours are fixed across figures: greedy grey, mlp blue, gru orange
   (colour-blind safe), so a reader never has to re-learn the legend. E3
-  variants: e2_gru keeps gru's orange, the e3 variants get their own.
+  variants: e2_gru keeps gru's orange, the e3 variants get their own; ORCA
+  (DESIGN_ORCA.md) brown (straight) and pink (path).
 - Every function takes ``order``, the series to draw and their order (default:
   greedy, mlp, gru); a series missing from the data is skipped.
 - World -> pixel for paths follows ``render``: ``px = x * scale``,
@@ -27,9 +28,9 @@ import numpy as np  # noqa: E402
 
 COLORS = {"greedy": "#7f7f7f", "mlp": "#1f77b4", "gru": "#ff7f0e",
           "e2_gru": "#ff7f0e", "e3_timeout": "#2ca02c", "e3_geo": "#1f77b4",
-          "e3_both": "#9467bd"}
+          "e3_both": "#9467bd", "orca_straight": "#8c564b", "orca_path": "#e377c2"}
 ORDER = ["greedy", "mlp", "gru"]
-_SPARE = ["#8c564b", "#e377c2", "#17becf", "#bcbd22", "#d62728"]
+_SPARE = ["#17becf", "#bcbd22", "#d62728", "#7f7f7f", "#2ca02c"]
 
 
 def color(name: str, k: int = 0) -> str:

@@ -2,9 +2,11 @@
 
     python evaluate.py --ckpt RUN/ckpt_best.pt --suites test4,test_mixed --data-root D --out OUT
     python evaluate.py --greedy                --suites test4,test_mixed --data-root D --out OUT
+    python evaluate.py --orca straight|path    --suites test4,test_mixed --data-root D --out OUT
 
-Owns: the two controllers (``GreedyController`` = ``physics.greedy_action``,
-``PolicyController`` = a trained network), ``run_episode`` (one scene, one
+Owns: the controllers (``GreedyController`` = ``physics.greedy_action``,
+``PolicyController`` = a trained network; ``orca.ORCAController`` lives in
+``orca.py``), ``run_episode`` (one scene, one
 episode, the §5.3 row), the CLI that writes ``per_scene.csv``, ``metrics.json``
 and ``trajectories/``, and ``Validator`` (the same code on a suite, for
 ``train.py``).
@@ -19,10 +21,12 @@ Invariants:
 - Episodes are independent, so a process pool changes nothing but speed.
 - Evaluation runs the suite's physics with the *default* reward
   (DESIGN_E3.md §3.2): the metrics count outcomes, which no reward changes, and
-  no geodesic fields are built. A checkpoint trained on different physics
+  the simulator builds no geodesic fields (``orca_path`` builds its own, as
+  its map). A checkpoint trained on different physics
   (anything but reward fields and style) is refused.
 - ``metrics.json`` identity carries ``variant``: the run directory's name
-  without ``_seed<k>`` (``greedy`` for the null model).
+  without ``_seed<k>`` (``greedy`` for the null model, ``orca_straight`` /
+  ``orca_path`` for ORCA, DESIGN_ORCA.md §3).
 """
 from __future__ import annotations
 
@@ -188,6 +192,14 @@ def _greedy_chunk(args):
     return [run_episode(Scene.from_dict(d), GreedyController(), sim_cfg) for d in scene_dicts]
 
 
+def _orca_chunk(args):
+    from orca import ORCAController
+    mode, scene_dicts, sim_dict = args
+    sim_cfg = sim_config_from_dict(sim_dict)
+    ctrl = ORCAController(mode)
+    return [run_episode(Scene.from_dict(d), ctrl, sim_cfg) for d in scene_dicts]
+
+
 class Validator:
     """Deterministic policy on a suite, optionally in a persistent process pool."""
 
@@ -289,6 +301,7 @@ def main(argv=None):
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--ckpt", type=Path)
     g.add_argument("--greedy", action="store_true")
+    g.add_argument("--orca", choices=["straight", "path"], help="ORCA baseline (DESIGN_ORCA.md)")
     ap.add_argument("--suites", default="test4,test_mixed")
     ap.add_argument("--data-root", type=Path, default=Path("data"))
     ap.add_argument("--out", type=Path, required=True)
@@ -304,6 +317,12 @@ def main(argv=None):
         identity = {"controller": "greedy", "variant": "greedy", "seed": None, "ckpt": None}
         factory = GreedyController
         make_args = lambda dicts: (_greedy_chunk, (dicts, asdict(sim_cfg)))
+    elif a.orca:
+        from orca import ORCAController
+        identity = {"controller": "orca", "variant": f"orca_{a.orca}", "seed": None,
+                    "ckpt": None}
+        factory = lambda: ORCAController(a.orca)
+        make_args = lambda dicts: (_orca_chunk, (a.orca, dicts, asdict(sim_cfg)))
     else:
         _, cfg, trained_cfg, ck = load_policy(a.ckpt, not a.stochastic, a.seed)
         check_physics(trained_cfg, sim_cfg, a.ckpt)

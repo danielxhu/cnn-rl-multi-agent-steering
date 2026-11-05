@@ -624,6 +624,200 @@ def test_e3_8_variant_grouping():
         assert header == "| layout | greedy | gru |", header
 
 
+# ------------------------------------------------------ ORCA (DESIGN_ORCA.md §5)
+
+def _grid_best(lines, radius, v_pref, step=0.005):
+    """Dense grid over the speed disk: (nearest feasible point or None, smallest max-violation)."""
+    g = np.arange(-radius, radius + step, step)
+    X, Y = np.meshgrid(g, g)
+    pts = np.stack([X.ravel(), Y.ravel()], 1)
+    pts = pts[(pts ** 2).sum(1) <= radius * radius]
+    viol = np.full(len(pts), -np.inf)
+    for (px, py), (dx, dy) in lines:
+        viol = np.maximum(viol, dx * (py - pts[:, 1]) - dy * (px - pts[:, 0]))
+    feas = viol <= 0
+    near = None
+    if feas.any():
+        f = pts[feas]
+        near = f[np.argmin(((f - v_pref) ** 2).sum(1))]
+        if step > 0.0005:                                # refine round the coarse answer
+            loc = near + np.stack(np.meshgrid(*[np.arange(-0.03, 0.0301, 0.0005)] * 2), -1).reshape(-1, 2)
+            loc = loc[(loc ** 2).sum(1) <= radius * radius]
+            v = np.full(len(loc), -np.inf)
+            for (px, py), (dx, dy) in lines:
+                v = np.maximum(v, dx * (py - loc[:, 1]) - dy * (px - loc[:, 0]))
+            f = loc[v <= 0]
+            near = f[np.argmin(((f - v_pref) ** 2).sum(1))]
+    return near, viol.min()
+
+
+@test
+def test_orca_lp_matches_grid_search():
+    from orca import linear_program, max_violation
+    rng = np.random.default_rng(0)
+    R = 2.5
+    n_feas = n_infeas = 0
+    while n_feas < 25 or n_infeas < 10:
+        k = int(rng.integers(1, 9))
+        lines = []
+        for _ in range(k):
+            ang = rng.uniform(-math.pi, math.pi)
+            pt = rng.uniform(-2.5, 2.5, 2)
+            lines.append(((pt[0], pt[1]), (math.cos(ang), math.sin(ang))))
+        v_pref = rng.uniform(-3.5, 3.5, 2)
+        near, best_viol = _grid_best(lines, R, v_pref)
+        x = linear_program(lines, R, v_pref)
+        assert np.hypot(*x) <= R + 1e-6
+        if best_viol <= -0.05 and n_feas < 25:          # clearly feasible
+            n_feas += 1
+            assert max_violation(lines, x) <= 1e-6, (lines, x)
+            assert np.hypot(*(x - near)) <= 0.02, (x, near)
+        elif best_viol >= 0.05 and n_infeas < 10:       # clearly infeasible: 3-D fallback
+            n_infeas += 1
+            assert abs(max_violation(lines, x) - best_viol) <= 0.02, (max_violation(lines, x), best_viol)
+
+
+def _orca_run(scene, mode="straight", cfg=None):
+    import evaluate
+    from orca import ORCAController
+    cfg = cfg or Config()
+    sim = Simulator(scene, cfg)
+    ctrl = ORCAController(mode)
+    ctrl.reset(sim)
+    obs = sim.observe()
+    done = sim.done
+    while not done:
+        obs, _, done = sim.step(ctrl.act(sim, obs))
+    return sim
+
+
+def _open_scene(agents_goals, obstacles=()):
+    from scene import Agent, Obstacle, Region, Scene, boundary_walls
+    agents = [Agent(tuple(p), h, goal_region=Region(*g)) for p, h, g in agents_goals]
+    return Scene(walls=boundary_walls(100.0), obstacles=[Obstacle(c, r) for c, r in obstacles],
+                 agents=agents, goal_region=agents[0].goal_region,
+                 start_region=Region(1, 1, 99, 99))
+
+
+@test
+def test_orca_head_on_swap():
+    scene = _open_scene([((40.0, 50.0), 0.0, (58, 46, 66, 54)),
+                         ((60.0, 50.0), math.pi, (34, 46, 42, 54))])
+    sim = _orca_run(scene)
+    assert sim.outcome == ["goal", "goal"], sim.outcome
+    assert sim.collisions.sum() == 0
+
+
+@test
+def test_orca_four_way_swap():
+    c, d = 50.0, 14.0
+    spec = []
+    for k in range(4):
+        a = k * math.pi / 2
+        p = (c + d * math.cos(a), c + d * math.sin(a))
+        q = (c - d * math.cos(a), c - d * math.sin(a))
+        spec.append((p, a + math.pi, (q[0] - 4, q[1] - 4, q[0] + 4, q[1] + 4)))
+    sim = _orca_run(_open_scene(spec))
+    assert sim.outcome == ["goal"] * 4, sim.outcome
+    assert sim.collisions.sum() == 0
+
+
+@test
+def test_orca_avoids_static_circle():
+    scene = _open_scene([((20.0, 50.0), 0.0, (80, 44, 90, 56))], obstacles=[((50.0, 50.0), 8.0)])
+    sim = _orca_run(scene)
+    assert sim.outcome == ["goal"] and sim.collisions.sum() == 0
+    traj = np.array(sim.trajectories[0])
+    near = traj[np.abs(traj[:, 0] - 50) < 3]
+    assert (np.abs(near[:, 1] - 50) > 8 + 2).all(), "went round, not through"
+
+
+@test
+def test_orca_path_heads_for_the_gap():
+    from orca import ORCAController
+    from scene import Agent, Region, Scene, boundary_walls
+    # wall at x = 50 with a gap 40..50 (centre lines), goal behind it; agent below the gap's axis
+    walls = boundary_walls(100.0) + [((50.0, 0.0), (50.0, 40.0)), ((50.0, 50.0), (50.0, 100.0))]
+    goal = Region(80.0, 10.0, 95.0, 30.0)
+    scene = Scene(walls=walls, goal_region=goal, start_region=Region(5, 5, 20, 95),
+                  agents=[Agent((35.0, 20.0), 0.0)])
+    cfg = Config()
+    sim = Simulator(scene, cfg)
+    path, straight = ORCAController("path"), ORCAController("straight")
+    path.reset(sim)
+    straight.reset(sim)
+    p = sim.pos[0]
+    vp = path._path(p, goal, cfg)
+    vs = straight._straight(p, goal, cfg)
+    assert abs(np.hypot(*vp) - cfg.max_speed) < 1e-9
+    assert vs[1] < 0.1 * cfg.max_speed, "straight bearing points at the wall (east)"
+    assert vp[1] > 0.5 * cfg.max_speed, ("path bearing climbs toward the gap at y 40..50", vp)
+    # and the agent actually gets through
+    s = _orca_run(scene, "path")
+    assert s.outcome == ["goal"], s.outcome
+
+
+@test
+def test_orca_action_conversion():
+    from orca import velocity_to_action
+    cfg = Config()
+    a = velocity_to_action(np.array([2.5, 0.0]), 0.0, np.array([2.5, 0.0]), cfg)
+    assert np.allclose(a, [0.0, 1.0])
+    v = 2.5 * np.array([math.cos(math.radians(120)), math.sin(math.radians(120))])
+    a = velocity_to_action(v, 0.0, v, cfg)
+    assert np.allclose(a, [1.0, 0.0]), a
+    w = 2.5 * np.array([math.cos(math.radians(-60)), math.sin(math.radians(-60))])
+    a = velocity_to_action(w, 0.0, w, cfg)                         # 60 deg to the right
+    assert a[0] == -1.0 and abs(a[1] - 0.5) < 1e-9, a
+
+
+@test
+def test_orca_deterministic():
+    cfg = Config()
+    scene = random_scene(np.random.default_rng(21), cfg, layout="crossing", n_agents=6,
+                         n_obstacles=3)
+    scene = envmod.randomise_headings(scene, np.random.default_rng(22))
+    for mode in ("straight", "path"):
+        a, b = _orca_run(scene, mode), _orca_run(scene, mode)
+        assert a.trajectories == b.trajectories and a.outcome == b.outcome, mode
+
+
+@test
+def test_orca_eval_and_aggregate():
+    import contextlib
+    import io
+    import json
+    import aggregate
+    import evaluate
+    from suites import make_suite
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        make_suite(d / "data" / "test4", ("open", "doorway"), 5, (4, 4), (0, 2), 31, Config(),
+                   name="test4")
+        with contextlib.redirect_stdout(io.StringIO()):
+            evaluate.main(["--orca", "straight", "--suites", "test4", "--data-root", str(d / "data"),
+                           "--out", str(d / "eval" / "orca_straight")])
+            evaluate.main(["--greedy", "--suites", "test4", "--data-root", str(d / "data"),
+                           "--out", str(d / "eval" / "greedy")])
+        ev = d / "eval" / "orca_straight"
+        for f in ("per_scene.csv", "metrics.json"):
+            assert (ev / f).exists(), f
+        assert len(list((ev / "trajectories").glob("*.json"))) == 2
+        m = json.loads((ev / "metrics.json").read_text())
+        assert m["identity"]["controller"] == "orca" and m["identity"]["variant"] == "orca_straight"
+        assert m["identity"]["seed"] is None and m["suites"]["test4"]["overall"]["scenes"] == 10
+        with contextlib.redirect_stdout(io.StringIO()):
+            aggregate.main(["--evals", str(d / "eval"), "--out", str(d / "res")])
+        text = (d / "res" / "table_e2.md").read_text(encoding="utf-8")
+        header = [l for l in text.splitlines() if l.startswith("| layout")][0]
+        assert header == "| layout | greedy | orca_straight |", header
+        rows = [l for l in text.splitlines() if l.startswith("| open")]
+        assert rows and "±" not in rows[0], rows                 # one run: no std
+        assert "orca_straight 1" in text
+        for f in ("fig_per_layout.png", "fig_bottleneck.png", "fig_paths.png"):
+            assert (d / "res" / f).exists(), f
+
+
 def main():
     only = sys.argv[1:]
     failed = 0

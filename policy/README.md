@@ -58,9 +58,26 @@ Paths default to `E:\policy-data`, `E:\policy-runs`, `E:\policy-eval`
 `--total-steps`, `--workers`, `--eval-workers`. Re-run after any interruption:
 finished steps are skipped and unfinished runs resume.
 
+## ORCA baseline (no training)
+
+Classical reciprocal collision avoidance (DESIGN_ORCA.md), plain numpy, in
+`orca.py`. `orca_straight` heads for the goal's straight-line bearing (the
+policy's information); `orca_path` follows the E3 geodesic field (a map).
+
+```bash
+python evaluate.py --orca straight --suites test4,test_mixed --data-root data --out eval/orca_straight --workers 4
+python evaluate.py --orca path     --suites test4,test_mixed --data-root data --out eval/orca_path --workers 4
+python scripts/run_orca.py --dry-run  # training machine: both variants, E2 / E3 tables with ORCA columns, push
+```
+
+`aggregate.py` treats greedy and both ORCA variants as non-learned (one run,
+no spread, no training curve); `--path-variants` picks the series of
+`fig_paths.png`, `--include REGEX` limits which evaluation directories count.
+
 ## Files
 
 `_paths.py` (import shim to `sim/`), `policyconfig.py`, `env.py`, `nets.py`,
 `rollout.py`, `ppo.py`, `train.py`, `suites.py`, `evaluate.py`, `aggregate.py`,
-`plots.py`, `scripts/make_suites.py`, `scripts/run_e2.py`, `tests/run_tests.py`.
+`plots.py`, `orca.py`, `scripts/make_suites.py`, `scripts/run_e2.py`, `scripts/run_e3.py`,
+`scripts/run_orca.py`, `tests/run_tests.py`.
 `data/`, `runs/`, `eval/` are git-ignored scratch; `results/e2/` is written by the driver.
