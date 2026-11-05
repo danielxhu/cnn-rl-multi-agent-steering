@@ -19,6 +19,8 @@ Invariants:
 - The reward is part of the run (``RunConfig.reward``, DESIGN_E3.md §3.2):
   ``sim_cfg`` must carry it, ``--resume`` takes it from the checkpoint, and
   validation runs the default-reward physics (outcomes do not depend on it).
+- Validation only uses scenes of the run's own ``env.layouts``, so a held-out
+  layout never chooses ``ckpt_best.pt`` (DESIGN_E4.md §3).
 """
 from __future__ import annotations
 
@@ -178,7 +180,8 @@ def run(cfg: RunConfig, sim_cfg, out: Path, val_suite: Path | None = None, resum
     validator = None
     if val_suite is not None:
         from evaluate import Validator
-        validator = Validator(val_suite, default_reward(sim_cfg), val_workers)
+        validator = Validator(val_suite, default_reward(sim_cfg), val_workers,
+                              layouts=cfg.env.layouts)
     best = None
     if best_path.exists():
         best = load_ckpt(best_path).get("val")

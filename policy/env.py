@@ -20,6 +20,8 @@ Invariants:
 - Noise only touches the policy's copy of the observation, never the
   simulator's state.
 - All randomness comes from the ``rng`` given at construction.
+- A run never draws a scene of a layout outside ``EnvConfig.layouts``
+  (``in_training_layouts``); with all ten layouts that check changes nothing.
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from layouts import random_scene
+from layouts import boundary_walls, random_scene
 from physics import Simulator
 from scene import Scene
 
@@ -118,6 +120,18 @@ class ObsStack:
         return out.reshape(len(self.buf), self.k * self.d)
 
 
+def in_training_layouts(scene: Scene, layouts, sim_cfg) -> bool:
+    """Does ``scene`` belong to a run that trains on ``layouts`` (DESIGN_E4.md §3)?
+
+    The label is not enough when ``open`` is held out: ``walls_multi`` and
+    ``rooms_multi`` keep their label when they fall back to the ``open``
+    generator, and ``walls_multi`` may draw no walls at all, so a scene with
+    only the frame counts as ``open`` whatever its label. Uses no randomness."""
+    if scene.layout not in layouts:
+        return False
+    return "open" in layouts or len(scene.walls) > len(boundary_walls(sim_cfg.world))
+
+
 def sample_scene(env_cfg, sim_cfg, rng) -> Scene:
     """§1.2: one validated scene, headings per ``env_cfg.heading``."""
     while True:
@@ -126,6 +140,8 @@ def sample_scene(env_cfg, sim_cfg, rng) -> Scene:
         m = int(rng.integers(env_cfg.obstacles[0], env_cfg.obstacles[1] + 1))
         scene = random_scene(rng, sim_cfg, layout=layout, n_agents=n, n_obstacles=m)
         if scene is None or not 1 <= len(scene.agents) <= env_cfg.max_agents:
+            continue
+        if not in_training_layouts(scene, env_cfg.layouts, sim_cfg):
             continue
         if env_cfg.heading == "random":
             scene = randomise_headings(scene, rng)
