@@ -4,51 +4,51 @@
 Undergraduate research project, Fall 2026
 
 <p align="center">
-  <img src="pilot/results/fig_end_to_end.png" width="640" alt="Input scene images on the left, paths produced by the learned pipeline on the right">
+  <img src="policy/results/demo_e2e/IMG_5842BA104D41-1_e2e.png" width="760" alt="A hand-drawn scene photo, the scene parsed from it, and the paths the learned policy takes">
   <br>
-  <em>Left: input image. Right: the path the learned agent takes to the goal (red). The corridor in the bottom row was not seen during training.</em>
+  <em>Left: hand-drawn input. Middle: the parsed scene. Right: the shared policy driving all three agents to an exit.</em>
 </p>
 
 ## Overview
 
 Steering behavior describes how a mobile agent moves toward a goal while avoiding obstacles, walls and other agents. It is usually written by hand. The automated model discovery framework of Le and Hu [1, 2] instead searches for it with a genetic algorithm over a symbolic space of sensing, filtering and acting rules.
 
-This project takes a third route: learn the behavior, and learn it starting from a picture. A convolutional network parses a scene image into a structured description, and a reinforcement learning policy drives every agent in that scene from a local, ego-centric observation. The output is the path each agent walks to its goal. There are no hand-labeled images and no hand-written steering rules; the renderer produces the labels, and the policy learns from reward.
+This project takes a third route: learn the behavior, and learn it starting from a picture. A convolutional network parses a scene image, currently a photo of a hand drawing, into a structured description, and a reinforcement learning policy drives every agent in that scene from a local, ego-centric observation. The output is the path each agent walks to its goal. There are no hand-labeled images and no hand-written steering rules; the renderer produces the labels, and the policy learns from reward.
 
-Since the symbolic search and the learned policy can be run on the same scenarios with the same metrics, the project also gives a direct comparison between the two.
+The symbolic search and the learned policy can be run on the same scenarios with the same metrics, so a direct comparison between the two is planned (E6).
 
 ## Pipeline
 
 | Stage | Component | Input → Output |
 |---|---|---|
-| 1 | Scene image | 512 × 512 PNG |
-| 2 | U-Net pixel classifier | image → 6-class label map |
-| 3 | Geometry extraction | label map → agent poses, obstacles, walls, regions |
+| 1 | Scene image | drawing photo or render → 512 × 512 image |
+| 2 | U-Net with instance head | image → 6-class label map and agent heatmap |
+| 3 | Geometry extraction | network output → agent poses, obstacles, walls, start and exit regions |
 | 4 | Scene instantiation | structured description → simulator state |
-| 5 | Ego-centric observation | simulator state → 51 numbers per agent per step |
-| 6 | Shared policy (PPO) | observation → (turn, speed) |
+| 5 | Ego-centric observation | simulator state → 50 numbers per agent per step |
+| 6 | Shared policy (own PPO, GRU memory) | observation → (turn, speed) |
 | 7 | Synchronous simulation | actions → trajectories |
-| 8 | Path rendering | trajectories → paths drawn over the input |
+| 8 | Path rendering | trajectories → paths drawn over the scene |
 
-Generality comes from the observation. Each agent casts 16 rays spread evenly over its field of view (220°, range 22 in a 100 × 100 world, one ray through the centre of each 13.75° sector) and reads the nearest hit separately for three entity categories: obstacles, walls and other agents. Rays, not full sectors: beyond about 17 units another agent can fall between two rays and go unseen (obstacles and walls are always seen); `Config.rays_per_sector` casts more rays per sector and keeps the nearest. Goal distance, goal bearing and the agent's own speed are appended. Distances are clipped and normalized, so the vector never encodes absolute position. A corridor is just a set of near readings on some rays, in the same format as any other layout. Readings are split by entity category because the discovered symbolic models filter entities by type, and giving the learned policy the same distinction means both methods read the same information. All agents share one policy and step synchronously.
+Generality comes from the observation. Each agent casts 16 rays spread evenly over its field of view (220°, range 22 in a 100 × 100 world) and reads the nearest hit separately for three entity categories: obstacles, walls and other agents. That gives 48 numbers; goal bearing and the agent's own speed complete the 50. There is no goal distance, no map and no absolute position, so a corridor is just a set of near readings in the same format as any other layout. Rays, not full sectors: beyond about 17 units another agent can fall between two rays and go unseen. All agents share one policy and step synchronously.
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| [`sim/`](sim/) | Scene generator and multi-agent simulator: seven layout families, pixel-exact label maps, JSON ground truth, configuration-space validation, 15 unit tests. See [`sim/README.md`](sim/README.md). |
-| [`perception/`](perception/) | Full-scale perception: U-Net pixel classifier and geometry extraction trained on `sim/` output, E5 sweep and results, hand-drawn input. See [`perception/README.md`](perception/README.md). |
-| [`pilot/`](pilot/) | Earlier end-to-end pilot (128 × 128, single agent): U-Net perception, PPO policy, evaluation and figures. See [`pilot/README.md`](pilot/README.md). |
-| [`docs/proposal.pdf`](docs/proposal.pdf) | Full project proposal: approach, infrastructure, experiment plan and compute estimate. |
-| [`docs/`](docs/) | The proposal and figures used in this README. |
-| [`requirements.txt`](requirements.txt) | Python dependencies for `sim/` and `pilot/`. |
+| [`sim/`](sim/) | Scene generator and multi-agent simulator: ten layout families, pixel-exact label maps, JSON ground truth, configuration-space validation. See [`sim/README.md`](sim/README.md). |
+| [`perception/`](perception/) | U-Net and geometry extraction trained on `sim/` output, hand-drawn input (current model: v7, `models/sketch7/`), and the design for further input types ([`DESIGN_INPUTS.md`](perception/DESIGN_INPUTS.md)). See [`perception/README.md`](perception/README.md). |
+| [`policy/`](policy/) | Multi-agent PPO, E2 and E3 experiments, ORCA baseline, end-to-end demo. See [`policy/README.md`](policy/README.md). |
+| [`pilot/`](pilot/) | Earlier end-to-end pilot (128 × 128, single agent). See [`pilot/README.md`](pilot/README.md). |
+| [`docs/`](docs/) | Proposal, [pending proposal revisions](docs/PROPOSAL_REVISIONS.md), [compute request](docs/COMPUTE_REQUEST.md), figures. |
+| [`requirements.txt`](requirements.txt) | Python dependencies. |
 
 ## Scene generator
 
 <p align="center">
-  <img src="docs/layouts.png" alt="The seven layout families: open, corridor, room, doorway, two-doorway, cul-de-sac, crossing">
+  <img src="docs/layouts.png" alt="Seven of the ten layout families: open, corridor, room, doorway, two-doorway, cul-de-sac, crossing">
   <br>
-  <em>The seven layout families: open, corridor, room, doorway, two-doorway, cul-de-sac, crossing. Orange: spawn regions. Blue: goal regions. Black: obstacles and walls.</em>
+  <em>Seven of the ten layout families: open, corridor, room, doorway, two-doorway, cul-de-sac, crossing. The other three (boxrooms, walls_multi, rooms_multi) have several start and exit boxes. Orange: spawn regions. Blue: goal regions. Black: obstacles and walls.</em>
 </p>
 
 Each scene is written as an RGB image, a label map whose pixel values are class indices, and a JSON file with exact agent poses, obstacle geometry, wall segments and regions.
@@ -64,15 +64,43 @@ Throughput on a single laptop CPU core:
 | Render 512 × 512 with labels | 8.1 ms |
 | Disk footprint | 15.4 KB per scene |
 
-Baseline difficulty per layout, measured with a greedy controller that turns toward the goal at full speed (20 scenes per layout, 4 agents, 3 obstacles):
+Cul-de-sac and crossing were designed as hard cases for a locally sensing policy. From outside, a sealed pocket looks the same as a real exit, and at a crossing the agents have to avoid each other rather than static geometry. Per-layout results are in [`policy/results/e3/table_e3.md`](policy/results/e3/table_e3.md).
 
-| | open | room | two-doorway | doorway | corridor | cul-de-sac | crossing |
-|---|---|---|---|---|---|---|---|
-| Greedy success | 56% | 34% | 12% | 6% | 5% | 5% | 4% |
+## Results
 
-Cul-de-sac and crossing are the hardest cases for a locally sensing policy. From outside, a sealed pocket looks the same as a real exit, and at a crossing the agents have to avoid each other rather than static geometry.
+### Hand-drawn perception (v7)
 
-## Preliminary results (pilot)
+`scene_usable` is the share of scenes parsed well enough to simulate, on synthetic sketch test sets with about 500 to 1,000 scenes each (one seed):
+
+| Test set | Agent F1 | `scene_usable` |
+|---|---|---|
+| `test_sketch7` | 0.986 | 88.1% |
+| `test_sketch7_free` | 0.992 | 91.2% |
+| `test_sketch7_tilt` | 0.987 | 88.8% |
+| `test_sketch7_lines` | 0.988 | 85.6% |
+
+On 9 real drawings, a visual review found all 9 parses usable, with one tilted box made axis-aligned and overlapping agents in one drawing. Five of the 9 influenced v7, so this is not an independent test; an independent drawing set is still to be collected.
+
+### Steering policy (E2, E3, ORCA)
+
+Ten layouts, 2 to 8 agents, ground-truth scenes, fixed `test4` suite (100 scenes per layout, 4 agents). Learned rows are mean ± std over seeds: 5 for E2, 3 for E3. Baselines are one run each.
+
+| Method | Information | Success | Collision | Timeout |
+|---|---|---|---|---|
+| Greedy | goal bearing | 24.2% | 75.7% | 0.0% |
+| `orca_straight` | goal bearing, exact nearby geometry and agents | 61.7% | 25.8% | 12.5% |
+| E2 `mlp` | rays, bearing, speed | 81.7 ± 0.6% | 9.1 ± 1.6% | 9.3 ± 1.6% |
+| E2 `gru` | rays, bearing, speed | 88.4 ± 2.7% | 8.0 ± 2.6% | 3.6 ± 0.8% |
+| E3 `e3_both` (validation winner) | rays, bearing, speed | 89.3 ± 1.3% | 7.8 ± 1.3% | 2.9 ± 0.1% |
+| `orca_path` | as `orca_straight`, plus a full map and shortest paths | 90.4% | 7.9% | 1.7% |
+
+The policy clearly beats ORCA without route information and ties ORCA with a map, while using less information than either. The reward variants of E3 differ by less than seed noise. These test scenes come from the same layout families the policy trained on; transfer to unseen layouts (E4) has not been measured yet.
+
+### End to end
+
+[`policy/scripts/demo_e2e.py`](policy/scripts/demo_e2e.py) runs drawing → parsed scene → policy rollout on the 9 drawings with one policy seed: 75% of 40 agents reached an exit, 25% collided, none timed out ([per-drawing table](policy/results/demo_e2e/summary.md)). Most failures come from two drawings. This is a demonstration on a small non-independent set, not an evaluation, and the rollouts run inside the parsed scene.
+
+## Earlier pilot
 
 The pilot in [`pilot/`](pilot/) runs the full image → parse → simulate → path chain on a laptop CPU, with a single agent at 128 × 128 resolution. The policy is trained only on open scenes with 1 to 3 obstacles. Corridor layouts are held out and used for zero-shot evaluation.
 
@@ -92,21 +120,27 @@ End-to-end evaluation: the policy acts inside the parsed scene, so perception er
 
 | Stage | Status | Notes |
 |---|---|---|
-| Scene generator (`sim/`) | Done | 7 layout families, 15 tests |
-| Pilot (`pilot/`) | Done | Results above |
-| Full-scale perception (`perception/`) | Nearly done | U-Net + geometry extraction on `sim/` output; hand-drawn input in progress |
-| E5, perception robustness | Mostly done | Agent F1 ≥ 0.999 at 128 / 256 / 512 px on the clean test set; under heavy augmentation, a 256 px model trained without augmentation keeps only 56% of scenes usable, versus 100% when trained with it. 512 px instance-head runs pending |
-| E1–E4 | Planned | Policy-side experiments |
+| Scene generator (`sim/`) | Done | 10 layout families |
+| Pilot (`pilot/`) | Done | Single agent, 128 px |
+| Hand-drawn perception (`perception/`) | v7 done | Independent drawing test still to do |
+| E1, perception and behaviour gap | Partly done | Perception metrics done; same policy on parsed vs true scenes in progress |
+| E2, baseline policy | Done | `mlp` vs `gru`, 5 seeds |
+| E3, reward | Done | Timeout penalty, geodesic progress, 3 seeds |
+| ORCA baseline | Done | `orca_straight`, `orca_path` |
+| E4, layout transfer | In progress | Leave-one-layout-out |
+| Floor plan and satellite input | Designed | [`DESIGN_INPUTS.md`](perception/DESIGN_INPUTS.md); not trained |
+| E5, E6 | Planned | |
 
-## Planned experiments
+## Experiment plan
 
-The proposal lays out five experiment families on the `sim/` suite:
+- **E1, perception and behaviour gap.** Perception metrics, then the same policy on parsed and ground-truth scenes to measure what perception error costs in behaviour.
+- **E2, baseline policy.** Memoryless vs GRU shared policy across ten layouts.
+- **E3, reward sensitivity.** Reward changes tested against the E2 baseline; the winner carries forward.
+- **E4, layout transfer.** Leave-one-layout-out: train on nine layouts, test on the tenth, rotate.
+- **E5, crowd size.** Performance as the number of agents grows. The resolution and augmentation sweep called "E5" inside `perception/` predates this numbering.
+- **E6, comparison with discovered models.** The same scenarios and metrics as the symbolic framework, plus distilling the policy into a small decision tree.
 
-- **E1, layout generality.** Train on a subset of layout families and evaluate on all seven, including families that were held out, stratified by the recorded bottleneck width.
-- **E2, reward design.** Vary progress shaping, collision penalty, step cost and clearance bonus, and measure how the behavior changes. This is the learned-policy counterpart of fitness-function sensitivity in genetic search.
-- **E3, multi-agent scaling.** Train and evaluate at 2, 4, 8 and 16 agents, and test whether a policy trained at one density transfers to another.
-- **E4, comparison with discovered symbolic models.** Align scenarios, metrics and protocol with the existing framework's obstacle-avoidance models. Compare paths as well as aggregate numbers, and distill the learned policy into a shallow decision tree over the same observation to see how much performance the distillation costs.
-- **E5, perception robustness.** Sweep resolution and augmentation strength, report detection error as a function of nearest-neighbor agent spacing, and measure the downstream cost of perception error through the pipeline-vs-oracle gap.
+Further input types (floor plans, satellite images) parsing into one scene format are the planned scale-up. Proposal changes that are agreed but not yet in the PDF are tracked in [`docs/PROPOSAL_REVISIONS.md`](docs/PROPOSAL_REVISIONS.md).
 
 ## Quickstart
 
@@ -123,10 +157,18 @@ Generate scenes and run the generator's tests:
 
 ```bash
 cd sim
-python generate.py --n 7 --layout mixed --preview 7 --out data/preview   # one scene per layout
+python generate.py --n 10 --layout mixed --preview 10 --out data/preview  # one scene per layout
 python generate.py --n 3000 --layout mixed --agents 3-8 --obstacles 2-6 --seed 0 --out data/train
-python tests/run_tests.py                                                # 15 tests, ~20 s
+python tests/run_tests.py
 ```
+
+Run the perception and policy tests (CPU), from `perception/` and `policy/`:
+
+```bash
+python tests/run_tests.py
+```
+
+Training and evaluation commands are in [`perception/README.md`](perception/README.md) and [`policy/README.md`](policy/README.md).
 
 Reproduce the pilot (about 25 minutes on a laptop CPU, no GPU needed):
 
