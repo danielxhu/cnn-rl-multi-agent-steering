@@ -36,13 +36,25 @@ python evaluate.py --greedy --suites test4,test_mixed --data-root data --out eva
 python aggregate.py --evals eval --runs runs --out results/e2
 ```
 
-Useful flags of `train.py`: `--layouts open` (restrict layouts), `--agents LO HI`,
+Useful flags of `train.py`: `--layouts open` (restrict layouts; validation follows), `--agents LO HI`,
 `--total-steps`, `--workers W` (0 = inline), `--envs E`, `--device cpu|cuda`,
 `--stop-after N` (iterations, smoke runs); every `PPOConfig` field is a flag.
 
 Run directory: `config.json`, `log.csv`, `val.csv`, `ckpt_last.pt`,
 `ckpt_best.pt` (DESIGN §4). Evaluation directory: `per_scene.csv`,
 `metrics.json`, `trajectories/`.
+
+## E4: leave-one-layout-out (training machine, resumable; `DESIGN_E4.md`)
+
+```bash
+python scripts/run_e4.py --dry-run            # print every command with the Windows default paths
+python scripts/run_e4.py --dev                # tiny trial in a temp folder, no git
+python scripts/run_e4.py --layouts doorway    # one fold; --layouts names the layouts to hold out
+python scripts/run_e4.py                      # ten folds, seed 0, about 30 h
+python scripts/run_e4.py --seeds 1 2          # more seeds; finished folds are skipped
+```
+
+It needs the E2 suites and the `e3_both_seed*` evaluations. Results go to `results/e4`.
 
 ## The whole of E2 (training machine, resumable)
 

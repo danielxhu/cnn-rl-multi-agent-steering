@@ -43,7 +43,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from env import (ObsStack, actions_to_sim, base_obs_dim, obs_dim, to_policy_obs)
+from env import (ObsStack, actions_to_sim, base_obs_dim, in_training_layouts, obs_dim,
+                 to_policy_obs)
 from nets import ActorCritic
 from physics import Simulator, greedy_action
 from policyconfig import RunConfig, default_reward, physics_fields, sim_config_from_dict
@@ -201,11 +202,20 @@ def _orca_chunk(args):
 
 
 class Validator:
-    """Deterministic policy on a suite, optionally in a persistent process pool."""
+    """Deterministic policy on a suite, optionally in a persistent process pool.
 
-    def __init__(self, suite_dir, sim_cfg, workers=0):
+    ``layouts`` keeps only the scenes of those training layouts, so a layout
+    held out of training cannot choose ``ckpt_best.pt`` (DESIGN_E4.md §3);
+    with all ten layouts every scene stays, in order."""
+
+    def __init__(self, suite_dir, sim_cfg, workers=0, layouts=None):
         from dataclasses import asdict
-        self.names, scenes = zip(*load_suite(suite_dir))
+        items = load_suite(suite_dir)
+        if layouts is not None:
+            items = [(n, s) for n, s in items if in_training_layouts(s, layouts, sim_cfg)]
+            if not items:
+                raise ValueError(f"{suite_dir}: no validation scene of {list(layouts)}")
+        self.names, scenes = zip(*items)
         self.scene_dicts = [s.as_dict() for s in scenes]
         self.sim_dict = asdict(sim_cfg)
         self.workers = workers

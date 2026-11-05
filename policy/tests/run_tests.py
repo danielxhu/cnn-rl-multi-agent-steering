@@ -818,6 +818,395 @@ def test_orca_eval_and_aggregate():
             assert (d / "res" / f).exists(), f
 
 
+# ----------------------------------------- E4: layout hold-out (DESIGN_E4.md §7)
+
+def _run_e4():
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "scripts" / "run_e4.py"
+    spec = importlib.util.spec_from_file_location("run_e4", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _frame_only(scene, cfg):
+    from layouts import boundary_walls
+    return len(scene.walls) == len(boundary_walls(cfg.world))
+
+
+@test
+def test_e4_1_sampling_never_draws_the_held_out_layout():
+    from policyconfig import sim_config
+    run_e4 = _run_e4()
+    cfg = sim_config()
+    for i, held in enumerate(LAYOUTS_E2):
+        env_cfg = EnvConfig(layouts=tuple(run_e4.train_layouts(held)))
+        rng = np.random.default_rng(100 + i)
+        seen = {envmod.sample_scene(env_cfg, cfg, rng).layout for _ in range(50)}
+        assert held not in seen and seen == set(env_cfg.layouts), (held, seen)
+
+
+@test
+def test_e4_2_open_fold_rejects_open_scenes_under_other_labels():
+    """walls_multi / rooms_multi fall back to the open generator and keep their label."""
+    from policyconfig import sim_config
+    cfg = sim_config()
+    multi = ("walls_multi", "rooms_multi")
+    rng = np.random.default_rng(3)
+    drawn = [envmod.sample_scene(EnvConfig(layouts=("open",) + multi), cfg, rng)
+             for _ in range(120)]
+    assert any(s.layout in multi and _frame_only(s, cfg) for s in drawn), "test is vacuous"
+    rng = np.random.default_rng(3)
+    for _ in range(120):
+        s = envmod.sample_scene(EnvConfig(layouts=multi), cfg, rng)
+        assert s.layout in multi and not _frame_only(s, cfg)
+    # the same rule at the scene level, whatever the generator does
+    real = envmod.random_scene
+    wall_free = real(np.random.default_rng(0), cfg, layout="open", n_agents=2, n_obstacles=0)
+    fake = replace(wall_free, layout="rooms_multi")
+    calls = []
+
+    def first_fake(*a, **k):
+        calls.append(k["layout"])
+        return fake if len(calls) == 1 else real(*a, **k)
+
+    envmod.random_scene = first_fake
+    try:
+        s = envmod.sample_scene(EnvConfig(layouts=multi), cfg, np.random.default_rng(1))
+    finally:
+        envmod.random_scene = real
+    assert len(calls) == 2 and not _frame_only(s, cfg)
+    assert envmod.in_training_layouts(fake, ("open",) + multi, cfg)    # E2 / E3 keep such scenes
+    assert not envmod.in_training_layouts(fake, multi, cfg)
+    # and validation: an open fold cannot choose its checkpoint on such scenes either
+    import evaluate
+    from scene import Scene
+    from suites import make_suite
+    with tempfile.TemporaryDirectory() as d:
+        make_suite(Path(d) / "val", multi, 40, (2, 4), (0, 2), 13, cfg, name="val")
+        every = evaluate.Validator(Path(d) / "val", cfg)
+        fold = evaluate.Validator(Path(d) / "val", cfg, layouts=multi)
+        free = sum(_frame_only(Scene.from_dict(s), cfg) for s in every.scene_dicts)
+        assert free > 0, "test is vacuous"
+        assert len(fold.scene_dicts) == len(every.scene_dicts) - free
+        assert not any(_frame_only(Scene.from_dict(s), cfg) for s in fold.scene_dicts)
+
+
+@test
+def test_e4_3_all_ten_layouts_unchanged():
+    """E2 and E3: the sampled stream and the validation set are what they were."""
+    import evaluate
+    from policyconfig import sim_config
+    from suites import make_suite
+    cfg = sim_config()
+
+    def old_sample(ec, rng):                               # sample_scene before E4
+        while True:
+            layout = str(rng.choice(ec.layouts))
+            n = int(rng.integers(ec.agents[0], ec.agents[1] + 1))
+            m = int(rng.integers(ec.obstacles[0], ec.obstacles[1] + 1))
+            scene = random_scene(rng, cfg, layout=layout, n_agents=n, n_obstacles=m)
+            if scene is None or not 1 <= len(scene.agents) <= ec.max_agents:
+                continue
+            return envmod.randomise_headings(scene, rng)
+
+    a, b = np.random.default_rng(11), np.random.default_rng(11)
+    for _ in range(40):
+        x, y = envmod.sample_scene(EnvConfig(), cfg, a), old_sample(EnvConfig(), b)
+        assert x.as_dict() == y.as_dict()
+    with tempfile.TemporaryDirectory() as d:
+        make_suite(Path(d) / "val", LAYOUTS_E2, 2, (2, 4), (0, 2), 9, cfg, name="val")
+        plain = evaluate.Validator(Path(d) / "val", cfg)
+        full = evaluate.Validator(Path(d) / "val", cfg, layouts=LAYOUTS_E2)
+        assert full.names == plain.names and full.scene_dicts == plain.scene_dicts
+        assert len(plain.names) == 2 * len(LAYOUTS_E2)
+        some = evaluate.Validator(Path(d) / "val", cfg, layouts=("open", "doorway"))
+        assert {s["layout"] for s in some.scene_dicts} == {"open", "doorway"}
+        make_suite(Path(d) / "other", ("corridor",), 1, (2, 4), (0, 2), 9, cfg, name="other")
+        try:
+            evaluate.Validator(Path(d) / "other", cfg, layouts=("open",))
+            raise AssertionError("an empty validation set must be refused")
+        except ValueError:
+            pass
+
+
+@test
+def test_e4_4_held_out_layout_absent_from_a_real_fold():
+    """Training scenes, validation scenes, selection metric and saved config, with resume."""
+    import csv
+    import contextlib
+    import io
+    import evaluate
+    import train
+    from policyconfig import RunConfig, sim_config
+    from suites import make_suite
+    run_e4 = _run_e4()
+    held = "doorway"
+    others = tuple(run_e4.train_layouts(held))
+    sim = sim_config(run_e4.REWARD)
+    drawn, validated = [], []
+    real_scene, real_episode = envmod.random_scene, evaluate.run_episode
+
+    def spy_scene(*a, **k):
+        drawn.append(k["layout"])
+        return real_scene(*a, **k)
+
+    def spy_episode(scene, *a, **k):
+        validated.append(scene.layout)
+        return real_episode(scene, *a, **k)
+
+    envmod.random_scene, evaluate.run_episode = spy_scene, spy_episode
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            make_suite(d / "val", LAYOUTS_E2, 1, (2, 3), (0, 1), 7, sim_config(), name="val")
+            out = d / "run"
+            cfg = replace(tiny_run_cfg("gru", E=2, T=16, L=16, W=0, layouts=others),
+                          val_every=1, ckpt_every=1, reward=dict(run_e4.REWARD))
+            train.run(cfg, sim, out, val_suite=d / "val", quiet=True, stop_after=2)
+            with contextlib.redirect_stdout(io.StringIO()):       # no --layouts: from the checkpoint
+                train.main(["--out", str(out), "--resume", "--val-suite", str(d / "val"),
+                            "--W", "0", "--stop-after", "1"])
+            header = next(csv.reader(open(out / "val.csv")))
+            n_val = len(list(csv.DictReader(open(out / "val.csv"))))
+            saved = [RunConfig.load(out / "config.json").env.layouts]
+            for name in ("ckpt_last.pt", "ckpt_best.pt"):
+                ck = train.load_ckpt(out / name)
+                saved.append(tuple(ck["config"]["env"]["layouts"]))
+            best_val = train.load_ckpt(out / "ckpt_best.pt")["val"]
+            last = train.load_ckpt(out / "ckpt_last.pt")
+    finally:
+        envmod.random_scene, evaluate.run_episode = real_scene, real_episode
+    assert drawn and held not in drawn, drawn
+    assert set(validated) == set(others), validated
+    assert len(validated) == n_val * len(others), (len(validated), n_val)
+    assert f"success_{held}" not in header
+    assert all(f"success_{l}" in header for l in others)
+    assert all(tuple(s) == others for s in saved), saved
+    assert f"success_{held}" not in best_val
+    assert last["iteration"] == 3 and last["config"]["reward"] == run_e4.REWARD
+
+
+@test
+def test_e4_5_worker_processes_keep_to_the_fold():
+    from dataclasses import replace as rep
+    from policyconfig import sim_config
+    from nets import ActorCritic
+    from rollout import WorkerPool
+    run_e4 = _run_e4()
+    held = "cul_de_sac"
+    cfg = tiny_run_cfg("gru", E=2, T=32, L=16, W=2, layouts=tuple(run_e4.train_layouts(held)))
+    sim = rep(sim_config(), max_steps=8)                    # scenes end inside one iteration
+    model = ActorCritic(envmod.obs_dim(cfg.env), cfg.net)
+    pool = WorkerPool(cfg, sim)
+    try:
+        records = [r for _ in range(3) for r in pool.collect(model.get_weights())["records"]]
+    finally:
+        pool.close()
+    seen = {r["layout"] for r in records}
+    assert seen and held not in seen and seen <= set(cfg.env.layouts), seen
+
+
+@test
+def test_e4_6_dry_run_prints_the_windows_commands():
+    import contextlib
+    import importlib.util
+    import io
+    import json
+    run_e4 = _run_e4()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_e4.main(["--dry-run"])
+    text = buf.getvalue()
+    trains = [l for l in text.splitlines() if " train.py " in l]
+    evals = [l for l in text.splitlines() if " evaluate.py " in l]
+    assert len(trains) == len(evals) == 10
+    # the reward is the E3 winner's, flag for flag
+    win = json.loads((Path(run_e4.__file__).parent.parent / "results/e3/winner.json").read_text())
+    spec = importlib.util.spec_from_file_location("run_e3", Path(run_e4.__file__).parent / "run_e3.py")
+    run_e3 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_e3)
+    flags = " ".join(run_e3.VARIANTS[win["variant"]])
+    for held, line in zip(LAYOUTS_E2, trains):
+        layouts = line.split(" --layouts ")[1].split()[0].split(",")
+        assert held not in layouts and len(layouts) == 9 and set(layouts) < set(LAYOUTS_E2)
+        assert f"--out E:\\policy-runs\\e4_holdout_{held}_seed0 " in line, line
+        assert "--val-suite E:\\policy-data\\val " in line and flags in line, line
+        assert "--seed 0 " in line and "--resume" not in line
+    assert f"--out E:\\policy-eval\\e4\\e4_holdout_open_seed0 " in evals[0], evals[0]
+    assert "--ckpt E:\\policy-runs\\e4_holdout_open_seed0\\ckpt_best.pt " in evals[0]
+    assert "aggregate_e4.py --evals E:\\policy-eval --runs E:\\policy-runs --out results/e4" in text
+    assert 'git commit -m "E4: leave-one-layout-out results"' in text
+    assert "git push" in text and "git pull --rebase --autostash" in text
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_e4.main(["--dry-run", "--no-push", "--seeds", "1", "2", "--layouts", "room", "open"])
+    text = buf.getvalue()
+    assert "git push" not in text and "git pull" not in text
+    trains = [l for l in text.splitlines() if " train.py " in l]
+    names = [l.split("--out ")[1].split()[0].rsplit("\\", 1)[1] for l in trains]
+    assert names == ["e4_holdout_room_seed1", "e4_holdout_open_seed1",
+                     "e4_holdout_room_seed2", "e4_holdout_open_seed2"], names
+
+
+@test
+def test_e4_7_driver_resumes_and_skips():
+    import contextlib
+    import io
+    import json
+    import torch
+    run_e4 = _run_e4()
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        a = run_e4.parse_args(["--runs", str(d / "runs"), "--eval", str(d / "eval"),
+                               "--data-root", str(d / "data")])
+        held, seed = "room", 0
+        name = run_e4.run_name(held, seed)
+        rd = d / "runs" / name
+        rd.mkdir(parents=True)
+        calls = []
+        run_e4.run = lambda cmd, dry, cwd=None: calls.append([str(c) for c in cmd])
+
+        def save(steps, layouts=None, reward=None):
+            torch.save({"agent_steps": steps, "config": {
+                "env": {"layouts": layouts or run_e4.train_layouts(held)},
+                "reward": reward or dict(run_e4.REWARD), "seed": seed,
+                "ppo": {"total_steps": 100}}}, rd / "ckpt_last.pt")
+
+        def fold():
+            calls.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_e4.run_fold(a, held, seed, dry=False)
+            return [c[1] for c in calls], list(calls)
+
+        assert fold()[0] == ["train.py", "evaluate.py"]           # new: no --resume
+        assert "--resume" not in calls[0]
+        save(50)                                                  # interrupted
+        steps, cmds = fold()
+        assert steps == ["train.py", "evaluate.py"] and "--resume" in cmds[0]
+        save(100)                                                 # finished, not evaluated
+        assert fold()[0] == ["evaluate.py"]
+        ev = d / "eval" / "e4" / name
+        ev.mkdir(parents=True)
+        (ev / "metrics.json").write_text("{\"suites\": {\"test4\"")   # a write that was cut off
+        assert fold()[0] == ["evaluate.py"]
+        per = {held: {"success_rate": 0.5, "collision_rate": 0.2, "timeout_rate": 0.3}}
+        (ev / "metrics.json").write_text(json.dumps({"suites": {
+            "test4": {"per_layout": per}, "test_mixed": {"per_layout": per}}}))
+        (rd / "ckpt_best.pt").write_text("x")
+        os.utime(rd / "ckpt_best.pt", (1000, 1000))
+        assert fold()[0] == []                                    # finished fold: nothing runs
+        os.utime(rd / "ckpt_best.pt", None)                       # the run was extended later
+        os.utime(ev / "metrics.json", (1000, 1000))
+        assert fold()[0] == ["evaluate.py"]
+        for bad in ({"layouts": list(LAYOUTS_E2)}, {"reward": {"timeout_penalty": 25.0}}):
+            save(50, **bad)                                       # not this fold: never resumed
+            try:
+                fold()
+                raise AssertionError(f"{bad} must stop the driver")
+            except SystemExit as e:
+                assert "is not fold" in str(e)
+
+
+def _fake_eval(root, name, ident, success_by_layout, bins):
+    """An evaluation dir; every layout has 4 scenes, success as given, a bottleneck from ``bins``."""
+    import csv
+    import json
+    import evaluate
+    rows = []
+    for layout, ok in success_by_layout.items():
+        for i in range(4):
+            r = {k: 0.0 for k in evaluate.ROW_METRICS}
+            r.update(layout=layout, suite="test4", scene=f"{layout}{i}", n_agents=4,
+                     bottleneck=bins[i % len(bins)], success_rate=ok, collision_rate=1 - ok)
+            rows.append(r)
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "metrics.json").write_text(json.dumps(
+        {"identity": ident, "suites": {"test4": evaluate.metrics_for(rows)}}))
+    cols = ["suite", "scene", "layout", "n_agents", "bottleneck"] + evaluate.ROW_METRICS
+    with open(d / "per_scene.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+
+
+@test
+def test_e4_8_aggregate_reports_held_out_scenes_only():
+    import contextlib
+    import csv
+    import io
+    import json
+    import aggregate_e4
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ev = d / "eval"
+        # baseline: 0.9 / 0.8 on the two layouts with folds, 0.1 on one without
+        for seed, shift in ((0, 0.0), (1, 0.02)):
+            _fake_eval(ev, f"e3_both_seed{seed}",
+                       {"controller": "gru", "variant": "e3_both", "seed": seed, "ckpt": None},
+                       {"open": 0.9 + shift, "doorway": 0.8 + shift, "crossing": 0.1}, [6.0, 8.0])
+        # E2 and an E3 variant in the same root must not count as baseline or fold
+        _fake_eval(ev, "e2_gru_seed0", {"controller": "gru", "seed": 0, "ckpt": None},
+                   {"open": 0.0, "doorway": 0.0}, [6.0])
+        # fold: bad on its held-out layout, good on the trained ones, narrow scenes differ
+        for held, low in (("open", 0.5), ("doorway", 0.3)):
+            name = f"e4_holdout_{held}_seed0"
+            run = d / "runs" / name
+            run.mkdir(parents=True)
+            layouts = [l for l in LAYOUTS_E2 if l != held]
+            (run / "config.json").write_text(json.dumps({"env": {"layouts": layouts}}))
+            (run / "val.csv").write_text("iteration,agent_steps,success_rate,collision_rate\n"
+                                         "25,1000,0.5,0.3\n50,2000,0.6,0.2\n")
+            trained = "doorway" if held == "open" else "open"
+            _fake_eval(ev / "e4", name,
+                       {"controller": "gru", "variant": f"e4_holdout_{held}", "seed": 0,
+                        "ckpt": str(run / "ckpt_best.pt")},
+                       {held: low, trained: 1.0, "crossing": 1.0}, [6.0, 20.0])
+        res = d / "res"
+        args = ["--evals", str(ev), "--runs", str(d / "runs"), "--out", str(res)]
+        with contextlib.redirect_stdout(io.StringIO()):
+            aggregate_e4.main(args)
+        text = (res / "table_e4.md").read_text(encoding="utf-8")
+        row = [l for l in text.splitlines() if l.startswith("| open |")][0].split(" | ")
+        assert row[1] == "1" and row[2] == "0.910 ± 0.010" and row[3] == "0.500", row
+        assert row[4] == "+0.410", row
+        row = [l for l in text.splitlines() if l.startswith("| doorway |")][0].split(" | ")
+        assert row[4] == "+0.510", row
+        # mean over folds: only the two folds, crossing's 0.1 stays out
+        row = [l for l in text.splitlines() if l.startswith("| **mean over folds**")][0].split(" | ")
+        assert row[2] == "0.860" and row[3] == "0.400" and row[4] == "+0.460", row
+        with open(res / "summary_bottleneck.csv", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        got = {(r["layout"], r["bin"], r["series"]): r for r in rows}
+        # the fold's 1.0 on trained layouts must not reach the held-out split
+        h = got[("open", "[5.2,7)", "held-out")]
+        assert float(h["success"]) == 0.5 and h["scenes"] == "2" and h["runs"] == "1", h
+        assert got[("open", "[15,inf)", "held-out")]["success"] == "0.5"
+        a = got[("ALL", "[5.2,7)", "e3_both")]                    # baseline restricted to the folds
+        assert abs(float(a["success"]) - 0.86) < 1e-9 and a["scenes"] == "4", a
+        # the control column averages the trained layouts of the fold, not its held-out one
+        fold = aggregate_e4.load_folds(ev)["open"][0]
+        assert aggregate_e4.trained_mean(fold, "test4", ["doorway", "crossing"]) == 1.0
+        assert aggregate_e4.trained_mean(fold, "test4", ["doorway", "room"]) is None
+        for f in ("summary.csv", "summary_per_layout.csv", "fig_per_layout.png",
+                  "fig_bottleneck.png", "fig_training_curves.png"):
+            assert (res / f).stat().st_size > 0, f
+        assert not (res / "table_e4_mixed.md").exists()           # suite absent: skipped
+        # a mislabelled fold stops the report
+        run = d / "runs" / "e4_holdout_open_seed0"
+        (run / "config.json").write_text(json.dumps({"env": {"layouts": list(LAYOUTS_E2)}}))
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                aggregate_e4.main(args)
+            raise AssertionError("a fold that trained on its held-out layout must stop the report")
+        except SystemExit as e:
+            assert "trained on open" in str(e)
+        # the default E2 / E3 report never sees the folds
+        import aggregate
+        assert not [e for e in aggregate.load_evals(ev) if e["name"].startswith("e4_")]
+
+
 def main():
     only = sys.argv[1:]
     failed = 0
