@@ -23,6 +23,9 @@ Invariants:
   half-planes are relaxed (the paper's 3-D program).
 - ORCA reads exact positions and velocities from the simulator (more than the
   learned policy's 50 numbers); that is the point of the baseline (§0).
+- ``map_scene`` (DESIGN_GAP.md §5) replaces only the walls and obstacles the
+  controller plans around; agents, goals and physics stay the simulator's. None
+  (the default) plans on the simulator's own scene.
 """
 from __future__ import annotations
 
@@ -259,28 +262,31 @@ class ORCAController:
     """evaluate.py's controller protocol: ``reset(sim)``, ``act(sim, obs51)``."""
 
     def __init__(self, mode="straight", tau=5.0, tau_obs=3.0, margin=0.3, neighbor_dist=None,
-                 max_neighbors=10):
+                 max_neighbors=10, map_scene=None):
         if mode not in ("straight", "path"):
             raise ValueError(f"mode must be 'straight' or 'path', not {mode!r}")
         self.mode = mode
         self.name = f"orca_{mode}"
         self._kw = dict(tau=tau, tau_obs=tau_obs, margin=margin, max_neighbors=max_neighbors)
         self._neighbor_dist = neighbor_dist
+        self.map_scene = map_scene
 
     def reset(self, sim):
         cfg = sim.cfg
         self.params = ORCAParams(neighbor_dist=self._neighbor_dist or cfg.fov_range, **self._kw)
-        self.obs_c = sim._obs_c.copy()
-        self.obs_r = sim._obs_r.copy()
-        self.walls = [(np.asarray(a, float), np.asarray(b, float)) for a, b in sim._wall_lines]
+        world = sim.scene if self.map_scene is None else self.map_scene
+        self.obs_c = np.array([o.c for o in world.obstacles], float).reshape(-1, 2)
+        self.obs_r = np.array([o.r for o in world.obstacles], float).reshape(-1)
+        self.walls = [(np.asarray(a, float), np.asarray(b, float)) for a, b in world.walls]
         self.goals = [sim.scene.goal_for(a) for a in sim.scene.agents]
         self.fields = {}
+        self.no_path_steps = 0                         # agent-steps with no finite path (read only)
         if self.mode == "path":
             from reachability import clearance, geodesic_field, occupancy
-            clear = clearance(cfg, occupancy(cfg, sim.scene))
+            clear = clearance(cfg, occupancy(cfg, world))
             for g in self.goals:
                 if g not in self.fields:
-                    self.fields[g] = geodesic_field(cfg, sim.scene, g, cell=cfg.geo_cell,
+                    self.fields[g] = geodesic_field(cfg, world, g, cell=cfg.geo_cell,
                                                     clear=clear)
         c, s_ = math.cos(math.radians(-PASS_RIGHT_DEG)), math.sin(math.radians(-PASS_RIGHT_DEG))
         self.rot = np.array([[c, -s_], [s_, c]])
@@ -303,6 +309,7 @@ class ORCAController:
         cand = p[None, :] + cfg.max_speed * self.dirs
         vals = _bilinear_finite(field, cand, cfg.geo_cell)
         if not np.isfinite(vals).any():
+            self.no_path_steps += 1
             return straight                            # no finite path around: fall back
         k = int(np.argmin(vals))
         if goal.contains((float(cand[k, 0]), float(cand[k, 1]))):

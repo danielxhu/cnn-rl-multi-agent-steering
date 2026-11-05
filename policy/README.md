@@ -14,7 +14,7 @@ uv run --python 3.12 --with numpy --with opencv-python-headless --with pillow --
 
 On the Windows box replace that prefix with `python`.
 
-## Tests (CPU, about 20 s)
+## Tests (CPU, about 75 s)
 
 ```bash
 python tests/run_tests.py            # all
@@ -74,10 +74,35 @@ python scripts/run_orca.py --dry-run  # training machine: both variants, E2 / E3
 no spread, no training curve); `--path-variants` picks the series of
 `fig_paths.png`, `--include REGEX` limits which evaluation directories count.
 
+## Behaviour gap: true vs parsed scenes
+
+The same policy on the true scenes of the sketch7 test sets and on the scenes
+perception parsed from their images (DESIGN_GAP.md). `orca_path` runs next to it
+twice: true vs parsed world, and in the true world with the parsed scene as its
+map (`ORCAController(map_scene=...)`). No training; perception uses the GPU if
+there is one, episodes use CPU workers.
+
+```bash
+python scripts/run_gap.py --dry-run    # print every command
+python scripts/run_gap.py --limit 20   # smoke run: 20 scenes per set, nothing committed
+python scripts/run_gap.py              # parse, score, episodes, tables, commit, push
+python scripts/run_gap.py --policy E:\policy-runs\e3_geo_seed1\ckpt_best.pt --no-push
+```
+
+Paths default to `E:\cnn-data` (`--data-root`) and `E:\policy-eval\gap`
+(`--work`: parsed scenes, overlays, perception scores, about 85 KB per scene).
+Other flags: `--model`, `--sets`, `--workers`, `--device`, `--results`. Re-run after
+any interruption: finished sets and scenes are skipped.
+
+Results in `results/gap/<policy>/`: `gap.md` (both ORCA arms next to the policy,
+failed parses, gap by perception error, per layout), `per_scene.csv`, `metrics.json`,
+`fig_gap.png`, `fig_gap_map.png`, `identity.json`. Read DESIGN_GAP.md §3 and §5
+before quoting the numbers.
+
 ## Files
 
 `_paths.py` (import shim to `sim/`), `policyconfig.py`, `env.py`, `nets.py`,
 `rollout.py`, `ppo.py`, `train.py`, `suites.py`, `evaluate.py`, `aggregate.py`,
-`plots.py`, `orca.py`, `scripts/make_suites.py`, `scripts/run_e2.py`, `scripts/run_e3.py`,
-`scripts/run_orca.py`, `tests/run_tests.py`.
-`data/`, `runs/`, `eval/` are git-ignored scratch; `results/e2/` is written by the driver.
+`plots.py`, `orca.py`, `gap.py`, `scripts/make_suites.py`, `scripts/run_e2.py`, `scripts/run_e3.py`,
+`scripts/run_orca.py`, `scripts/run_gap.py`, `tests/run_tests.py`.
+`data/`, `runs/`, `eval/` are git-ignored scratch; `results/e2/` and `results/gap/` are written by the drivers.
