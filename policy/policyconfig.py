@@ -8,6 +8,9 @@ Invariants:
   load), so a ``config.json`` fully describes a run.
 - ``EnvConfig.memory`` and ``NetConfig.memory`` must agree; ``RunConfig``
   keeps them in sync (``RunConfig.make``).
+- ``EnvConfig.wallmap = "off"`` (the default, and what a ``config.json``
+  written before E7 loads as) leaves every observation as it was
+  (DESIGN_E7.md §3).
 - ``RunConfig.reward`` holds overrides of the simulator's reward fields
   (``REWARD_FIELDS``, DESIGN_E3.md §3.2); ``{}`` is E2's default reward. It is
   the only way a run changes the simulator, and it is saved with the run.
@@ -21,6 +24,8 @@ from pathlib import Path
 LAYOUTS_E2 = ("open", "corridor", "room", "doorway", "two_doorway", "cul_de_sac",
               "crossing", "boxrooms", "walls_multi", "rooms_multi")
 MEMORIES = ("mlp", "stack", "gru")
+WALLMAPS = ("off", "on")
+ODO_NOISE = ("none", "low", "high")
 # sim Config fields that shape the reward only (never the observation or the
 # dynamics): a run may override them, evaluation always resets them
 REWARD_FIELDS = ("goal_bonus", "collision_penalty", "agent_collision_penalty", "step_cost",
@@ -40,6 +45,9 @@ class EnvConfig:
     obs_noise: float = 0.0
     bearing_noise_deg: float = 0.0
     action_noise: float = 0.0
+    wallmap: str = "off"                    # "off" | "on": E7 wall memory (DESIGN_E7.md §1)
+    wallmap_every: int = 4                  # steps between height-field updates
+    odo_noise: str = "none"                 # "none" | "low" | "high" odometry drift (eval only)
 
 
 @dataclass

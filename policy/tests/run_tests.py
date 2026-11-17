@@ -1550,6 +1550,395 @@ def test_gap_driver_end_to_end_on_cpu():
         assert "2 already done, 0 to run" in again
 
 
+# ------------------------------------------------------------ E7: wall memory (DESIGN_E7.md §7)
+
+E7_REWARD = {"timeout_penalty": 25.0, "progress_metric": "geodesic"}
+
+
+def _e7_env_stream(env_cfg, reward, steps=400):
+    from policyconfig import sim_config
+    e = envmod.MultiAgentEnv(env_cfg, sim_config(reward), envmod.make_env_rng(0, 0, 0))
+    r = e.reset()
+    ar = np.random.default_rng(3)
+    tot_o, tot_r, nt, nf, ntr = float(r["obs"].sum()), 0.0, 0, 0, 0
+    for _ in range(steps):
+        s = e.step(ar.normal(size=(8, 2)))
+        tot_o += float(s["obs"].sum())
+        tot_r += float(s["reward"].sum())
+        nt, nf, ntr = nt + int(s["terminal"].sum()), nf + int(s["first"].sum()), ntr + int(s["truncated"].sum())
+    return tot_o, tot_r, nt, nf, ntr
+
+
+def _e7_controller_run(run_cfg):
+    import torch
+    from evaluate import PolicyController, run_episode
+    from nets import ActorCritic
+    torch.manual_seed(0)
+    w = ActorCritic(envmod.obs_dim(run_cfg.env), run_cfg.net).get_weights()
+    w["mean.weight"] = w["mean.weight"] * 60.0          # actions far from zero
+    sc = random_scene(np.random.default_rng(21), Config(), layout="room", n_agents=4, n_obstacles=2)
+    sc = envmod.randomise_headings(sc, np.random.default_rng(4))
+    ctrl = PolicyController(run_cfg, w)
+    return run_episode(sc, ctrl, Config(), record=True), ctrl
+
+
+@test
+def test_e7_1_off_is_unchanged():
+    """wallmap off: env stream and controller rollout as recorded before E7 (main at 01ba8ff)."""
+    from policyconfig import RunConfig
+    rec = {"e2": ({}, 48649.4793, -2661.008), "e3": (E7_REWARD, 48649.4793, -2663.4688)}
+    for tag, (rw, o, r) in rec.items():
+        tot_o, tot_r, nt, nf, ntr = _e7_env_stream(EnvConfig(), rw)
+        assert math.isclose(tot_o, o, rel_tol=1e-5) and math.isclose(tot_r, r, rel_tol=1e-5), \
+            (tag, tot_o, tot_r)
+        assert (nt, nf, ntr) == (66, 61, 0), (tag, nt, nf, ntr)
+    row, ctrl = _e7_controller_run(RunConfig.make("gru", 0, E7_REWARD))
+    assert [len(t) for t in row["trajectories"]] == [9, 48, 9, 10], row["trajectories"]
+    assert row["outcomes"] == ["collision"] * 4
+    assert np.allclose([t[-1] for t in row["trajectories"]],
+                       [[17.106, 20.456], [17.144, 55.648], [16.736, 32.643], [17.117, 55.085]],
+                       atol=2e-3)
+    assert ctrl.wm is None and row["exit_switches"] == 0.0
+
+
+@test
+def test_e7_2_geodesic_refactor_identical():
+    """geodesic_field (E3 progress) as recorded before the wavefront was split out."""
+    import reachability as R
+    c = Config()
+    rec = [("cul_de_sac", 2035, 321205.69, 32.0), ("boxrooms", 2037, 186970.84, 11.5153),
+           ("crossing", 6847, 137970.33, None)]
+    for k, (lay, n_inf, tot, mid) in enumerate(rec):
+        sc = random_scene(np.random.default_rng(30 + k), c, layout=lay, n_agents=3, n_obstacles=2)
+        f = R.geodesic_field(c, sc, sc.goal_for(sc.agents[0]), cell=1.0)
+        fin = np.isfinite(f)
+        assert int((~fin).sum()) == n_inf and math.isclose(float(f[fin].sum()), tot, rel_tol=1e-6)
+        assert (mid is None and not fin[50, 50]) or math.isclose(float(f[50, 50]), mid, abs_tol=1e-3)
+
+
+@test
+def test_e7_3_obs_dim_and_old_configs():
+    from policyconfig import RunConfig
+    assert envmod.obs_dim(EnvConfig()) == 50
+    assert envmod.obs_dim(EnvConfig(wallmap="on")) == 52
+    assert envmod.obs_dim(EnvConfig(wallmap="on", goal_obs="bearing_distance")) == 53
+    d = RunConfig.make("gru", 0, E7_REWARD).to_dict()
+    for k in ("wallmap", "wallmap_every", "odo_noise"):
+        del d["env"][k]                                  # a config.json written before E7
+    old = RunConfig.from_dict(d)
+    assert old.env.wallmap == "off" and envmod.obs_dim(old.env) == 50
+    try:
+        envmod.MultiAgentEnv(EnvConfig(wallmap="on", memory="stack"), Config(),
+                             np.random.default_rng(0))
+        raise AssertionError("wallmap + stack must be refused")
+    except ValueError:
+        pass
+
+
+def _e7_scene(walls, pos, heading, goal=None, exits=None):
+    from scene import Agent, Region, Scene, boundary_walls
+    goal = goal or Region(70.0, 46.0, 78.0, 54.0)
+    return Scene(walls=boundary_walls(100.0) + walls, obstacles=[],
+                 agents=[Agent(tuple(pos), heading)], goal_region=exits[0] if exits else goal,
+                 start_region=Region(1, 1, 99, 99), exits=exits)
+
+
+def _e7_memory(scene, env_cfg=None, rng=None, turns=()):
+    """WallMemory of ``scene`` after one observation plus one step per turn in ``turns``."""
+    from wallmap import WallMemory
+    cfg = Config()
+    sim = Simulator(scene, cfg)
+    wm = WallMemory(cfg, env_cfg or EnvConfig(wallmap="on"), rng)
+    wm.reset(sim)
+    out = wm.observe(sim, envmod.to_policy_obs(sim.observe(), EnvConfig()))
+    for t in turns:
+        sim.step(np.array([[t, 0.0]] * len(sim.pos)))
+        out = wm.observe(sim, envmod.to_policy_obs(sim.observe(), EnvConfig()))
+    return sim, wm, out
+
+
+def _surface_dist(cfg, scene, pts):
+    from geometry import point_seg_dist
+    d = np.full(len(pts), np.inf)
+    for seg in scene.walls:
+        d = np.minimum(d, point_seg_dist(pts[:, 0], pts[:, 1], seg) - cfg.wall_half)
+    return d
+
+
+@test
+def test_e7_4_hits_land_on_walls_and_a_5_2_gap_stays_open():
+    import wallmap as W
+    cfg = Config()
+    gap = cfg.min_bottleneck
+    y0, y1 = 50 - gap / 2 - cfg.wall_half, 50 + gap / 2 + cfg.wall_half      # surfaces 5.2 apart
+    scene = _e7_scene([((50.0, 0.0), (50.0, y0)), ((50.0, y1), (50.0, 100.0))], (40.0, 50.0), 0.0)
+    sim, wm, out = _e7_memory(scene, turns=(0.3, -0.6, 0.3))
+    iy, ix = np.nonzero(wm.occ[0])
+    assert len(iy) > 20
+    centres = np.stack([(ix + 0.5) * W.RASTER, (iy + 0.5) * W.RASTER], 1)
+    # inside the solid is harmless (a join across a convex cap); none may lie in free space
+    assert _surface_dist(cfg, scene, centres).max() < W.RASTER, "memory in free space"
+    free = wm.free_mask(0)
+    gy = int(50 // W.FIELD_CELL)
+    assert free[gy - 1:gy + 1, int(50 // W.FIELD_CELL)].any(), "the 5.2 gap was closed"
+    v = wm._value(wm.field[0], wm.est_pos[0])
+    assert np.isfinite(v)
+    ang = math.atan2(out[0, 51], out[0, 50])
+    assert abs(ang) < math.radians(30), math.degrees(ang)       # downhill: through the gap
+
+
+@test
+def test_e7_5_downhill_goes_around_a_seen_wall():
+    from wallmap import WallMemory
+    scene = _e7_scene([((45.0, 30.0), (45.0, 70.0))], (30.0, 50.0), 0.0)
+    cfg = Config()
+    sim = Simulator(scene, cfg)
+    wm = WallMemory(cfg, EnvConfig(wallmap="on"))
+    wm.reset(sim)
+    wm.update_field(0, sim)                                 # empty memory
+    c, s_ = wm.downhill(0, 0.0)
+    assert abs(math.atan2(s_, c)) <= math.radians(20), "empty memory: follow the bearing"
+    out = wm.observe(sim, envmod.to_policy_obs(sim.observe(), EnvConfig()))
+    assert wm.occ[0].any()
+    ang = math.atan2(out[0, 51], out[0, 50])
+    assert abs(math.sin(ang)) > 0.5, f"downhill {math.degrees(ang):.0f} deg: not round the wall"
+    assert abs(out[0, 48]) < 1e-6                           # single goal: bearing untouched
+
+
+@test
+def test_e7_6_exit_lock_and_switch():
+    import wallmap as W
+    from scene import Region
+    exits = [Region(80.0, 46.0, 84.0, 54.0), Region(16.0, 46.0, 20.0, 54.0)]
+
+    def run(seal, ex):
+        scene = _e7_scene([], (60.0, 50.0), 0.0, exits=ex)
+        cfg = Config()
+        sim = Simulator(scene, cfg)
+        wm = W.WallMemory(cfg, EnvConfig(wallmap="on"))
+        wm.reset(sim)
+        assert wm.target[0] == 0                            # the nearest exit at the start
+        if seal:                                            # memory encloses the east virtual goal
+            for p, q in (((88, 40), (88, 60)), ((88, 40), (100, 40)), ((88, 60), (100, 60)),
+                         ((99.9, 40), (99.9, 60))):
+                wm._mark(0, W._segment_points(np.array(p, float), np.array(q, float)))
+        out = wm.observe(sim, envmod.to_policy_obs(sim.observe(), EnvConfig()))
+        return wm, out
+
+    wm, out = run(True, exits)
+    assert wm.target[0] == 1 and wm.switches[0] == 1, (wm.target, wm.switches)
+    assert abs(abs(out[0, 48]) - 1.0) < 1e-6                # bearing now points west (behind)
+    wm, out = run(False, exits)
+    assert wm.target[0] == 0 and wm.switches[0] == 0
+    assert abs(out[0, 48]) < 1e-6
+    wm, _ = run(True, exits[:1])
+    assert wm.switches[0] == 0                              # one exit: never switches
+
+
+@test
+def test_e7_7_perfect_odometry_is_exact_and_noise_drifts():
+    from wallmap import WallMemory
+    cfg = Config()
+    scene = random_scene(np.random.default_rng(5), cfg, layout="open", n_agents=4, n_obstacles=0)
+
+    def run(env_cfg, rng):
+        sim = Simulator(scene, cfg)
+        wm = WallMemory(cfg, env_cfg, rng)
+        wm.reset(sim)
+        wm.observe(sim, envmod.to_policy_obs(sim.observe(), EnvConfig()))
+        ar = np.random.default_rng(9)
+        for _ in range(40):
+            if sim.done:
+                break
+            sim.step(np.stack([ar.uniform(-0.3, 0.3, 4), np.full(4, 0.6)], 1))
+            wm.observe(sim, envmod.to_policy_obs(sim.observe(), EnvConfig()))
+        return sim, wm
+
+    sim, wm = run(EnvConfig(wallmap="on"), None)
+    assert np.array_equal(wm.est_pos, sim.pos) and np.array_equal(wm.est_head, sim.heading)
+    noisy = EnvConfig(wallmap="on", odo_noise="high")
+    _, a = run(noisy, np.random.default_rng(1))
+    _, b = run(noisy, np.random.default_rng(1))
+    assert np.array_equal(a.est_pos, b.est_pos), "noise must be reproducible from the seed"
+    assert np.abs(a.est_pos - sim.pos).max() > 0.1, "high noise must drift"
+    try:
+        WallMemory(cfg, noisy, None)
+        raise AssertionError("noise without a generator must be refused")
+    except ValueError:
+        pass
+
+
+@test
+def test_e7_8_env_and_controller_see_the_same_observation():
+    import torch
+    from evaluate import PolicyController
+    from nets import ActorCritic
+    from policyconfig import RunConfig, sim_config
+    from wallmap import WallMemory
+    ec = EnvConfig(wallmap="on")
+    cfg = sim_config(E7_REWARD)
+    e = envmod.MultiAgentEnv(ec, cfg, envmod.make_env_rng(0, 0, 3))
+    r = e.reset()
+    sim = Simulator(e.scene, cfg)
+    wm = WallMemory(cfg, ec)
+    wm.reset(sim)
+    mine = wm.observe(sim, envmod.to_policy_obs(sim.observe(), ec))
+    n = e.n
+    assert np.allclose(r["obs"][:n], mine)
+    ar = np.random.default_rng(2)
+    for _ in range(30):
+        a = ar.normal(size=(8, 2)) * 0.4
+        s = e.step(a)
+        if s["first"].any():
+            break
+        obs51, _, _ = sim.step(envmod.actions_to_sim(a[:n]))
+        mine = wm.observe(sim, envmod.to_policy_obs(obs51, ec))
+        al = s["alive"][:n]
+        assert np.allclose(s["obs"][:n][al], mine[al]), "env and a plain WallMemory disagree"
+    run_cfg = RunConfig(env=ec, net=RunConfig.make("gru").net, ppo=RunConfig.make("gru").ppo)
+    torch.manual_seed(0)
+    ctrl = PolicyController(run_cfg, ActorCritic(52, run_cfg.net).get_weights())
+    sim = Simulator(e.scene, cfg)
+    ctrl.reset(sim)
+    obs = sim.observe()
+    for _ in range(5):
+        obs, _, _ = sim.step(ctrl.act(sim, obs))
+    ctrl.act(sim, obs)                                      # the memory catches up on act
+    assert ctrl.wm is not None and np.array_equal(ctrl.wm.est_pos[sim.active], sim.pos[sim.active])
+
+
+@test
+def test_e7_9_loop_metric():
+    from evaluate import turning
+
+    def reference(tr):                                     # behave.py, 16 Nov analysis
+        p = np.asarray(tr, float)
+        d = np.diff(p, axis=0)
+        step = np.hypot(d[:, 0], d[:, 1])
+        d = d[step > 0.2]
+        if len(d) < 3:
+            return 0.0
+        h = np.arctan2(d[:, 1], d[:, 0])
+        dh = (np.diff(h) + np.pi) % (2 * np.pi) - np.pi
+        cum = np.concatenate([[0.0], np.cumsum(dh)])
+        return float(cum.max() - cum.min())
+
+    t = np.linspace(0, 2.2 * np.pi, 80)
+    circle = np.stack([50 + 10 * np.cos(t), 50 + 10 * np.sin(t)], 1)
+    line = np.stack([np.linspace(10, 90, 50), np.full(50, 30.0)], 1)
+    u = np.linspace(0, np.pi, 40)
+    s_bend = np.concatenate([np.stack([10 + 5 * np.sin(u), 50 - 5 * np.cos(u)], 1),
+                             np.stack([10 - 5 * np.sin(u), 60 - 5 * np.cos(u)], 1)])
+    assert turning(circle) >= 2 * np.pi
+    assert turning(line) < 1e-9 and turning(s_bend) < 2 * np.pi
+    assert turning([[0, 0], [0, 0.1], [0, 0.15]]) == 0.0
+    r = np.random.default_rng(0)
+    for _ in range(20):
+        tr = np.cumsum(r.normal(size=(60, 2)), 0)
+        assert turning(tr) == reference(tr)
+
+
+@test
+def test_e7_10_smoke_train_eval_aggregate():
+    import csv
+    import json
+    import aggregate_e7
+    import evaluate
+    import train
+    from dataclasses import replace as rep
+    from policyconfig import sim_config
+    from suites import make_suite
+    cfg = sim_config(E7_REWARD)
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        for name in ("val", "test4", "test_mixed"):
+            make_suite(d / "data" / name, ("doorway", "rooms_multi"), 2, (2, 3), (0, 1), 7,
+                       Config(), name=name)
+        for name, env_kw in (("e3_both_seed0", {}), ("e7_map_seed0", {"wallmap": "on"})):
+            rc = rep(tiny_run_cfg("gru", E=1, T=16, L=16, W=0, **env_kw), val_every=2,
+                     ckpt_every=2, reward=dict(E7_REWARD))
+            out = d / "runs" / name
+            train.run(rc, cfg, out, val_suite=d / "data" / "val", quiet=True, stop_after=2)
+            val = list(csv.DictReader(open(out / "val.csv")))
+            assert "loop_rate" not in val[0] and "exit_switches" not in val[0]
+            evaluate.main(["--ckpt", str(out / "ckpt_best.pt"), "--suites", "test4,test_mixed",
+                           "--data-root", str(d / "data"), "--out", str(d / "eval" / name)])
+        evaluate.main(["--ckpt", str(d / "runs/e7_map_seed0/ckpt_best.pt"), "--suites", "test4",
+                       "--data-root", str(d / "data"), "--out", str(d / "eval/e7_map_seed0_odo_high"),
+                       "--odo-noise", "high"])
+        try:
+            evaluate.main(["--ckpt", str(d / "runs/e3_both_seed0/ckpt_best.pt"), "--suites", "test4",
+                           "--data-root", str(d / "data"), "--out", str(d / "x"), "--odo-noise", "low"])
+            raise AssertionError("--odo-noise on a policy without wall memory must be refused")
+        except SystemExit:
+            pass
+        m = json.loads((d / "eval/e7_map_seed0/metrics.json").read_text())["suites"]["test4"]
+        assert {"loop_rate", "exit_switches"} <= set(m["overall"]) and "multi_exit" in m
+        head = open(d / "eval/e7_map_seed0/per_scene.csv").readline()
+        assert "loop_rate" in head and "multi_exit" in head
+        res = d / "res"
+        aggregate_e7.main(["--evals", str(d / "eval"), "--out", str(res),
+                           "--check-against", str(d / "eval")])
+        for f in ("table_e7.md", "table_e7_mixed.md", "table_e7_longgru.md", "table_e7_odo.md",
+                  "summary_e7.csv", "fig_per_layout.png", "fig_bottleneck.png", "fig_loop.png",
+                  "verdict.json"):
+            assert (res / f).exists() and (res / f).stat().st_size > 0, f
+        ver = json.loads((res / "verdict.json").read_text())
+        assert "e7_map_helps" in ver and "odo_high_success_loss" in ver
+        assert ver["baseline_reproduced"] is True
+        assert "Loop rate" in (res / "table_e7.md").read_text(encoding="utf-8")
+
+
+def _run_e7():
+    import importlib.util
+    path = Path(__file__).resolve().parent.parent / "scripts" / "run_e7.py"
+    spec = importlib.util.spec_from_file_location("run_e7", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@test
+def test_e7_11_dry_run_prints_the_windows_commands():
+    import contextlib
+    import io
+    run_e7 = _run_e7()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_e7.main(["--dry-run", "--full"])
+    text = buf.getvalue()
+    lines = text.splitlines()
+    trains = [l for l in lines if " train.py " in l]
+    evals = [l for l in lines if " evaluate.py " in l]
+    assert len(trains) == 6 and len(evals) == 1 + 4 + 3 + 6 + 2, (len(trains), len(evals))
+    reward = "--timeout-penalty 25 --progress-metric geodesic"
+    assert all(reward in l and "--resume" not in l for l in trains)
+    assert "--out E:\\policy-runs\\pilot_e7\\e7_map_seed0 " in trains[0] and \
+        "--wallmap on --total-steps 2000000" in trains[0]
+    assert "pilot_e7\\e7_longgru_seed0 " in trains[1] and "--L 128 --total-steps 2000000" in trains[1]
+    names = [l.split("--out ")[1].split()[0].rsplit("\\", 1)[1] for l in trains[2:]]
+    assert names == ["e7_map_seed0", "e7_map_seed1", "e7_map_seed2", "e7_longgru_seed0"], names
+    assert all("--total-steps" not in l for l in trains[2:])
+    assert "--out E:\\policy-eval\\e7_pilot\\e7_map_seed0 " in evals[0]
+    assert sum("--odo-noise high" in l for l in evals) == 3
+    assert "--ckpt E:\\policy-runs\\e3_both_seed2\\ckpt_best.pt " in text
+    assert "aggregate_e7.py --evals E:\\policy-eval\\e7 --out results" in text
+    assert "--check-against E:\\policy-eval" in text
+    assert "git push" in text and 'git commit -m "E7: wall memory results"' in text
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_e7.main(["--dry-run", "--no-push"])
+    text = buf.getvalue()
+    assert text.count(" train.py ") == 2 and "e7_map_seed1" not in text
+    assert "git" not in text and "--full" in text
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_e7.main(["--dry-run", "--full", "--no-push", "--wallmap-every", "8"])
+    text = buf.getvalue()
+    assert "git push" not in text and "git pull" not in text
+    assert text.count("--wallmap-every 8") == 4                # pilot + three full e7_map runs
+
+
 def main():
     only = sys.argv[1:]
     failed = 0

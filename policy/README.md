@@ -14,7 +14,7 @@ uv run --python 3.12 --with numpy --with opencv-python-headless --with pillow --
 
 On the Windows box replace that prefix with `python`.
 
-## Tests (CPU, about 75 s)
+## Tests (CPU, about 90 s)
 
 ```bash
 python tests/run_tests.py            # all
@@ -55,6 +55,25 @@ python scripts/run_e4.py --seeds 1 2          # more seeds; finished folds are s
 ```
 
 It needs the E2 suites and the `e3_both_seed*` evaluations. Results go to `results/e4`.
+
+## E7: wall memory (training machine, resumable; `DESIGN_E7.md`)
+
+Each agent remembers the walls its rays have hit (placed by dead reckoning) and
+gets the downhill direction of a path-distance field around them
+(`--wallmap on`, 52 numbers). Compared with `e3_both` and a longer-BPTT GRU
+(`--L 128`).
+
+```bash
+python scripts/run_e7.py --dry-run --full     # print every command with the Windows default paths
+python scripts/run_e7.py                      # pilot: 2 M steps of each variant, then the speed
+python scripts/run_e7.py --full               # 3 x e7_map + 1 x e7_longgru, evaluation, results/e7
+python scripts/run_e7.py --full --wallmap-every 8   # if the pilot is below 1,200 agent-steps/s
+```
+
+It needs the E2 suites and `e3_both_seed{0,1,2}/ckpt_best.pt`.
+`evaluate.py --odo-noise low|high` adds odometry drift to a wall-memory policy.
+Every evaluation now also reports `loop_rate` (the share of agents whose heading
+turns through 360° or more) and a multi-exit subset.
 
 ## The whole of E2 (training machine, resumable)
 
@@ -115,6 +134,6 @@ before quoting the numbers.
 
 `_paths.py` (import shim to `sim/`), `policyconfig.py`, `env.py`, `nets.py`,
 `rollout.py`, `ppo.py`, `train.py`, `suites.py`, `evaluate.py`, `aggregate.py`,
-`plots.py`, `orca.py`, `gap.py`, `scripts/make_suites.py`, `scripts/run_e2.py`, `scripts/run_e3.py`,
-`scripts/run_orca.py`, `scripts/run_gap.py`, `tests/run_tests.py`.
+`plots.py`, `orca.py`, `gap.py`, `wallmap.py`, `aggregate_e7.py`, `scripts/make_suites.py`, `scripts/run_e2.py`, `scripts/run_e3.py`,
+`scripts/run_orca.py`, `scripts/run_gap.py`, `scripts/run_e7.py`, `tests/run_tests.py`.
 `data/`, `runs/`, `eval/` are git-ignored scratch; `results/e2/` and `results/gap/` are written by the drivers.

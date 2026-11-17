@@ -20,6 +20,9 @@ Invariants:
 - Noise only touches the policy's copy of the observation, never the
   simulator's state.
 - All randomness comes from the ``rng`` given at construction.
+- With ``wallmap = "on"`` the observation gains the two downhill columns of
+  ``wallmap.WallMemory`` (and a multi-exit bearing follows its target exit);
+  with ``"off"`` nothing here changes (DESIGN_E7.md §3).
 - A run never draws a scene of a layout outside ``EnvConfig.layouts``
   (``in_training_layouts``); with all ten layouts that check changes nothing.
 """
@@ -50,9 +53,18 @@ def base_obs_dim(env_cfg) -> int:
     return SIM_OBS_DIM if env_cfg.goal_obs == "bearing_distance" else SIM_OBS_DIM - 1
 
 
+def wallmap_on(env_cfg) -> bool:
+    """E7 wall memory (DESIGN_E7.md §1); ``getattr`` so pre-E7 configs read as off."""
+    on = getattr(env_cfg, "wallmap", "off")
+    if on not in ("off", "on"):
+        raise ValueError(f"wallmap must be 'off' or 'on', not {on!r}")
+    return on == "on"
+
+
 def obs_dim(env_cfg) -> int:
     k = env_cfg.stack_k if env_cfg.memory == "stack" else 1
-    return base_obs_dim(env_cfg) * k
+    extra = 2 if wallmap_on(env_cfg) else 0
+    return (base_obs_dim(env_cfg) + extra) * k
 
 
 def to_policy_obs(obs51: np.ndarray, env_cfg) -> np.ndarray:
@@ -156,6 +168,14 @@ class MultiAgentEnv:
         self._d = base_obs_dim(env_cfg)
         self.stack = (ObsStack(self.S, env_cfg.stack_k, self._d)
                       if env_cfg.memory == "stack" else None)
+        self.wm = None
+        if wallmap_on(env_cfg):
+            from wallmap import EXTRA, WallMemory
+            if self.stack is not None:
+                raise ValueError("wallmap and the frame stack do not combine")
+            noisy = getattr(env_cfg, "odo_noise", "none") != "none"
+            self.wm = WallMemory(sim_cfg, env_cfg, rng if noisy else None)
+            self._d += EXTRA
         self._records: list = []
         self.sim = None
         self.n = 0
@@ -164,6 +184,8 @@ class MultiAgentEnv:
     def _policy_obs(self, obs51_n: np.ndarray) -> np.ndarray:
         """(n, 51) simulator obs -> (S, base_dim) with noise, zero rows for empty slots."""
         base = add_obs_noise(to_policy_obs(obs51_n, self.cfg), self.cfg, self.rng)
+        if self.wm is not None:
+            base = self.wm.observe(self.sim, base)
         out = np.zeros((self.S, self._d), np.float32)
         out[:self.n] = base
         return out
@@ -172,6 +194,8 @@ class MultiAgentEnv:
         scene = sample_scene(self.cfg, self.sim_cfg, self.rng)
         self.scene = scene
         self.sim = Simulator(scene, self.sim_cfg)
+        if self.wm is not None:
+            self.wm.reset(self.sim)
         self.n = len(scene.agents)
         self.ep_return = np.zeros(self.S)
         return self.sim.observe()

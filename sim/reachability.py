@@ -252,7 +252,16 @@ def _geo_moves(reach=3):
 
 
 _GEO_MOVES = _geo_moves()
+_GEO_MOVES_BY_REACH = {3: _GEO_MOVES}
 _GEO_PAD = 3
+
+
+def _geo_moves_of(reach):
+    if reach not in _GEO_MOVES_BY_REACH:
+        if not 1 <= reach <= _GEO_PAD:
+            raise ValueError(f"reach must be in 1..{_GEO_PAD}")
+        _GEO_MOVES_BY_REACH[reach] = _geo_moves(reach)
+    return _GEO_MOVES_BY_REACH[reach]
 _GEO_BIG = 1e6                  # separates runs in the segmented running minimum
 _CHAINS = {}
 
@@ -317,13 +326,26 @@ def geodesic_field(cfg, scene, goal, radius=None, cell=1.0, clear=None) -> np.nd
         ddy = np.maximum(np.maximum(r.y0 - py, py - r.y1), 0.0)
         dist = np.minimum(dist, np.hypot(ddx, ddy))
     D = np.where(free & (dist <= cell), dist, np.inf).ravel()
+    return geodesic_wavefront(free, D, cell)
+
+
+def geodesic_wavefront(free: np.ndarray, D: np.ndarray, cell: float, reach: int = 3) -> np.ndarray:
+    """(m, m) float32 path lengths over the free mask ``free`` (m, m) from the
+    sources ``D`` (m * m, flat: initial value per cell, inf = not a source).
+
+    The propagation of ``geodesic_field``, on any free mask: E7's wall memory
+    (policy/DESIGN_E7.md §1.3) runs it on an agent's own map. ``reach`` = 3
+    is the 32 directions of ``geodesic_field``; 2 gives 16 (twice as fast,
+    path lengths up to about 2.7 % long)."""
+    m = free.shape[0]
+    moves = _geo_moves_of(reach)
 
     # legal moves: ok[(dy, dx)][p] = the move from p - (dy, dx) into p is allowed
     P = _GEO_PAD
     fp = np.zeros((m + 2 * P, m + 2 * P), bool)
     fp[P:P + m, P:P + m] = free
     ok = {}
-    for dy, dx, c, crossed in _GEO_MOVES:
+    for dy, dx, c, crossed in moves:
         o = free & fp[P - dy:P - dy + m, P - dx:P - dx + m]
         for cy, cx in crossed:
             o &= fp[P - cy:P - cy + m, P - cx:P - cx + m]
@@ -333,7 +355,7 @@ def geodesic_field(cfg, scene, goal, radius=None, cell=1.0, clear=None) -> np.nd
     # chain positions index an extra slot of D that is always inf
     n = m * m
     lines = []
-    for dy, dx, c, _ in _GEO_MOVES:
+    for dy, dx, c, _ in moves:
         if (dy, dx) < (-dy, -dx):
             continue
         idx, valid = _chains(m, dy, dx)

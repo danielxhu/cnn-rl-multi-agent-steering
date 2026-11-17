@@ -283,6 +283,10 @@ def build_parser():
                     help="sim reward: charged once at a timeout (E3 uses 25)")
     ap.add_argument("--progress-metric", choices=["euclid", "geodesic"], default=None,
                     help="sim reward: distance of the progress term")
+    ap.add_argument("--wallmap", choices=["off", "on"], default=None,
+                    help="E7 wall memory and height-field direction (DESIGN_E7.md §1)")
+    ap.add_argument("--wallmap-every", type=int, default=None,
+                    help="steps between height-field updates (default 4)")
     ap.add_argument("--stop-after", type=int, default=None, help="iterations, for smoke runs")
     for f in fields(PPOConfig):
         flag = "--" + f.name.replace("_", "-")
@@ -301,7 +305,7 @@ def config_from_args(a) -> RunConfig:
         env["layouts"] = tuple(a.layouts.split(","))
     if a.agents:
         env["agents"] = tuple(a.agents)
-    for k in ("goal_obs", "heading", "stack_k"):
+    for k in ("goal_obs", "heading", "stack_k", "wallmap", "wallmap_every"):
         if getattr(a, k) is not None:
             env[k] = getattr(a, k)
     cfg = replace(cfg, ppo=replace(cfg.ppo, **ppo), env=replace(cfg.env, **env))

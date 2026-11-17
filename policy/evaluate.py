@@ -24,6 +24,11 @@ Invariants:
   the simulator builds no geodesic fields (``orca_path`` builds its own, as
   its map). A checkpoint trained on different physics
   (anything but reward fields and style) is refused.
+- E7 (DESIGN_E7.md §5.1): every row also carries ``loop_rate``,
+  ``loop_success_rate``, ``noloop_success_rate``, ``exit_switches`` and
+  ``multi_exit``; validation (``Validator``) leaves them out, so ``val.csv``
+  keeps its columns. A policy trained with ``wallmap = "on"`` keeps its wall
+  memory inside ``PolicyController``.
 - ``metrics.json`` identity carries ``variant``: the run directory's name
   without ``_seed<k>`` (``greedy`` for the null model, ``orca_straight`` /
   ``orca_path`` for ORCA, DESIGN_ORCA.md §3).
@@ -44,7 +49,7 @@ import numpy as np
 import torch
 
 from env import (ObsStack, actions_to_sim, base_obs_dim, in_training_layouts, obs_dim,
-                 to_policy_obs)
+                 to_policy_obs, wallmap_on)
 from nets import ActorCritic
 from physics import Simulator, greedy_action
 from policyconfig import RunConfig, default_reward, physics_fields, sim_config_from_dict
@@ -56,6 +61,32 @@ ROW_METRICS = ["success_rate", "collision_rate", "static_collision_rate",
                "agent_collision_rate", "timeout_rate", "collision_violations",
                "remaining_agents", "finish_time", "mean_finish_step", "mean_path_length",
                "all_reached"]
+# DESIGN_E7.md §5.1: in per_scene.csv and metrics.json, never in validation (val.csv)
+E7_METRICS = ["loop_rate", "loop_success_rate", "noloop_success_rate", "exit_switches"]
+LOOP_MIN_STEP = 0.2                 # steps shorter than this carry no heading
+LOOP_TURN = 2 * math.pi             # a loop: the cumulative heading change spans 360 deg
+
+
+def turning(path) -> float:
+    """max - min of the cumulative signed heading change along ``path`` (radians).
+
+    Steps shorter than ``LOOP_MIN_STEP`` are dropped; fewer than 3 steps -> 0.
+    The loop metric of the 16 Nov failure analysis (DESIGN_E7.md §5.1)."""
+    p = np.asarray(path, float).reshape(-1, 2)
+    d = np.diff(p, axis=0)
+    d = d[np.hypot(d[:, 0], d[:, 1]) > LOOP_MIN_STEP]
+    if len(d) < 3:
+        return 0.0
+    h = np.arctan2(d[:, 1], d[:, 0])
+    dh = (np.diff(h) + np.pi) % (2 * np.pi) - np.pi
+    cum = np.concatenate([[0.0], np.cumsum(dh)])
+    return float(cum.max() - cum.min())
+
+
+def is_multi_exit(scene) -> bool:
+    from scene import RegionSet
+    return any(isinstance(g, RegionSet) and len(g) > 1
+               for g in (scene.goal_for(a) for a in scene.agents))
 
 
 # ------------------------------------------------------------ controllers
@@ -73,8 +104,11 @@ class GreedyController:
 class PolicyController:
     """A trained actor-critic acting on the 50-number (or stacked) observation."""
 
-    def __init__(self, run_cfg: RunConfig, weights: dict, deterministic=True, seed=0):
+    def __init__(self, run_cfg: RunConfig, weights: dict, deterministic=True, seed=0,
+                 odo_noise=None):
         self.cfg, self.det = run_cfg, deterministic
+        self.seed = seed
+        self.odo_noise = odo_noise or getattr(run_cfg.env, "odo_noise", "none")
         torch.set_num_threads(1)
         self.model = ActorCritic(obs_dim(run_cfg.env), run_cfg.net)
         self.model.set_weights(weights)
@@ -88,9 +122,27 @@ class PolicyController:
         self.first = torch.ones(n, dtype=torch.bool)
         ec = self.cfg.env
         self.stack = (ObsStack(n, ec.stack_k, base_obs_dim(ec)) if ec.memory == "stack" else None)
+        self.wm = None
+        if wallmap_on(ec):
+            from dataclasses import replace
+            from wallmap import WallMemory
+            rng = None
+            if self.odo_noise != "none":
+                # per scene, so the drift does not depend on how scenes are chunked
+                import zlib
+                key = zlib.crc32(json.dumps(sim.scene.as_dict(), sort_keys=True).encode())
+                rng = np.random.default_rng([self.seed, key])
+            self.wm = WallMemory(sim.cfg, replace(ec, odo_noise=self.odo_noise), rng)
+            self.wm.reset(sim)
+
+    @property
+    def exit_switches(self):
+        return None if self.wm is None else self.wm.switches
 
     def act(self, sim, obs51):
         obs = to_policy_obs(obs51, self.cfg.env)
+        if self.wm is not None:
+            obs = self.wm.observe(sim, obs)
         if self.stack is not None:
             if self.first.any():
                 self.stack.clear(self.first.numpy())
@@ -143,6 +195,14 @@ def run_episode(scene, controller, sim_cfg, env_cfg=None, record=False) -> dict:
                                 if reached else float("nan")),
            "mean_path_length": st["mean_path_length"],
            "all_reached": int(len(reached) == n)}
+    loops = np.array([turning(t) >= LOOP_TURN for t in sim.trajectories])
+    goal = np.array([o == "goal" for o in sim.outcome])
+    sw = getattr(controller, "exit_switches", None)
+    row.update(loop_rate=float(loops.mean()) if n else 0.0,
+               loop_success_rate=float(goal[loops].mean()) if loops.any() else float("nan"),
+               noloop_success_rate=float(goal[~loops].mean()) if (~loops).any() else float("nan"),
+               exit_switches=float(np.mean(sw)) if sw is not None else 0.0,
+               multi_exit=int(is_multi_exit(scene)))
     if record:
         row["trajectories"] = [[list(map(float, p)) for p in t] for t in sim.trajectories]
         row["outcomes"] = list(sim.outcome)
@@ -160,7 +220,8 @@ def _mean(rows, key):
 
 
 def summarise(rows: list) -> dict:
-    return {"scenes": len(rows), **{k: _mean(rows, k) for k in ROW_METRICS}}
+    keys = ROW_METRICS + [k for k in E7_METRICS if rows and all(k in r for r in rows)]
+    return {"scenes": len(rows), **{k: _mean(rows, k) for k in keys}}
 
 
 def metrics_for(rows: list) -> dict:
@@ -173,6 +234,9 @@ def metrics_for(rows: list) -> dict:
         sel = [r for r in rows if r["bottleneck"] is not None and lo <= r["bottleneck"] < hi]
         key = f"[{lo:g},{'inf' if hi == math.inf else format(hi, 'g')})"
         out["per_bottleneck"][key] = summarise(sel) if sel else {"scenes": 0}
+    if rows and all("multi_exit" in r for r in rows):          # DESIGN_E7.md §5.2
+        sel = [r for r in rows if r["multi_exit"]]
+        out["multi_exit"] = summarise(sel) if sel else {"scenes": 0}
     return out
 
 
@@ -180,10 +244,11 @@ def metrics_for(rows: list) -> dict:
 
 def _eval_chunk(args):
     """Worker: a list of scene dicts -> rows. Module-level so ``spawn`` can pickle it."""
-    cfg_dict, weights, scene_dicts, sim_dict, deterministic, seed = args
+    cfg_dict, weights, scene_dicts, sim_dict, deterministic, seed = args[:6]
+    odo = args[6] if len(args) > 6 else None
     cfg = RunConfig.from_dict(cfg_dict)
     sim_cfg = sim_config_from_dict(sim_dict)
-    ctrl = PolicyController(cfg, weights, deterministic, seed)
+    ctrl = PolicyController(cfg, weights, deterministic, seed, odo)
     return [run_episode(Scene.from_dict(d), ctrl, sim_cfg) for d in scene_dicts]
 
 
@@ -230,7 +295,7 @@ class Validator:
         rows = [r for p in parts for r in p]
         assert len(rows) == n
         m = metrics_for(rows)
-        out = dict(m["overall"])
+        out = {k: v for k, v in m["overall"].items() if k not in E7_METRICS}
         out.pop("scenes")
         for l, v in m["per_layout"].items():
             out[f"success_{l}"] = v["success_rate"]
@@ -284,7 +349,8 @@ def evaluate_suites(controller_factory, chunk_fn_args, suites: dict, workers: in
         if pool:
             pool.close()
             pool.join()
-    cols = ["suite", "scene", "layout", "n_agents", "bottleneck"] + ROW_METRICS
+    cols = ["suite", "scene", "layout", "n_agents", "bottleneck"] + ROW_METRICS + \
+        [k for k in E7_METRICS + ["multi_exit"] if all_rows and k in all_rows[0]]
     with open(out / "per_scene.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -318,6 +384,8 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--stochastic", action="store_true")
     ap.add_argument("--seed", type=int, default=0, help="sampling seed with --stochastic")
+    ap.add_argument("--odo-noise", choices=["none", "low", "high"], default=None,
+                    help="odometry drift of the E7 wall memory (DESIGN_E7.md §5.3)")
     a = ap.parse_args(argv)
     suites = {s: a.data_root / s for s in a.suites.split(",")}
     first = json.loads((next(iter(suites.values())) / "suite.json").read_text())
@@ -341,9 +409,13 @@ def main(argv=None):
                     "seed": cfg.seed, "ckpt": str(a.ckpt), "reward": cfg.reward,
                     "iteration": ck.get("iteration"), "agent_steps": ck.get("agent_steps"),
                     "deterministic": not a.stochastic}
-        factory = lambda: PolicyController(cfg, weights, not a.stochastic, a.seed)
+        if a.odo_noise is not None:
+            if not wallmap_on(cfg.env):
+                raise SystemExit("--odo-noise needs a checkpoint trained with --wallmap on")
+            identity["odo_noise"] = a.odo_noise
+        factory = lambda: PolicyController(cfg, weights, not a.stochastic, a.seed, a.odo_noise)
         make_args = lambda dicts: (_eval_chunk, (cfg.to_dict(), weights, dicts, asdict(sim_cfg),
-                                                 not a.stochastic, a.seed))
+                                                 not a.stochastic, a.seed, a.odo_noise))
     m = evaluate_suites(factory, make_args, suites, a.workers, a.out, identity, sim_cfg)
     for sname, sm in m["suites"].items():
         print(f"\n{sname}  ({sm['overall']['scenes']} scenes)   success  collision  timeout")
