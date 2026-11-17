@@ -135,5 +135,5 @@ before quoting the numbers.
 `_paths.py` (import shim to `sim/`), `policyconfig.py`, `env.py`, `nets.py`,
 `rollout.py`, `ppo.py`, `train.py`, `suites.py`, `evaluate.py`, `aggregate.py`,
 `plots.py`, `orca.py`, `gap.py`, `wallmap.py`, `aggregate_e7.py`, `scripts/make_suites.py`, `scripts/run_e2.py`, `scripts/run_e3.py`,
-`scripts/run_orca.py`, `scripts/run_gap.py`, `scripts/run_e7.py`, `tests/run_tests.py`.
+`scripts/run_orca.py`, `scripts/run_gap.py`, `scripts/run_e7.py`, `scripts/azure_setup.sh` (`AZURE_E7.md`), `tests/run_tests.py`.
 `data/`, `runs/`, `eval/` are git-ignored scratch; `results/e2/` and `results/gap/` are written by the drivers.

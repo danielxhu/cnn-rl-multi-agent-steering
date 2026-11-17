@@ -1937,6 +1937,18 @@ def test_e7_11_dry_run_prints_the_windows_commands():
     text = buf.getvalue()
     assert "git push" not in text and "git pull" not in text
     assert text.count("--wallmap-every 8") == 4                # pilot + three full e7_map runs
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        run_e7.main(["--dry-run", "--train-only", "e7_map_seed0", "e7_map_seed1"])
+    text = buf.getvalue()
+    trains = [l for l in text.splitlines() if " train.py " in l]
+    assert len(trains) == 2 and "e7_map_seed0 " in trains[0] and "e7_map_seed1 " in trains[1]
+    assert "--workers 10 " in trains[0] and "evaluate.py" not in text and "git" not in text
+    try:
+        run_e7.main(["--dry-run", "--train-only", "e7_map_seed9"])
+        raise AssertionError("an unknown run must be refused")
+    except SystemExit as e:
+        assert "unknown runs" in str(e)
 
 
 def main():

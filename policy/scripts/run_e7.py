@@ -3,6 +3,7 @@
     python scripts/run_e7.py               # pilot, then stop and report the speed
     python scripts/run_e7.py --full        # pilot (skipped when done), full runs, eval, aggregate, push
     python scripts/run_e7.py --dry-run     # print the commands only (add --full for every step)
+    python scripts/run_e7.py --train-only e7_map_seed0 e7_map_seed1   # this machine's share only
 
 Steps, each skipped when its output already exists (so a second run resumes):
 
@@ -161,6 +162,9 @@ def main(argv=None):
                     help="height-field update interval of e7_map (default 4, §1.3)")
     ap.add_argument("--workers", type=int, default=10, help="rollout processes per run")
     ap.add_argument("--eval-workers", type=int, default=6)
+    ap.add_argument("--train-only", nargs="+", default=None, metavar="RUN",
+                    help="train only these full runs (e.g. e7_map_seed0), then stop: "
+                         "for splitting the runs between machines (AZURE_E7.md)")
     ap.add_argument("--no-push", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
@@ -170,6 +174,19 @@ def main(argv=None):
 
     banner("1. inputs")
     check_inputs(a, dry)
+
+    if a.train_only:
+        names = {f"{v}_seed{s}" for v in VARIANTS for s in SEEDS[v]}
+        bad = sorted(set(a.train_only) - names)
+        if bad:
+            raise SystemExit(f"--train-only: unknown runs {bad}; choose from {sorted(names)}")
+        banner("3. full runs (--train-only)")
+        for v in VARIANTS:
+            for s in SEEDS[v]:
+                if f"{v}_seed{s}" in a.train_only:
+                    run(train_cmd(a, v, s, a.runs / f"{v}_seed{s}", a.total_steps), dry)
+        print("\n  --train-only: done. When every run is in place, run: python scripts/run_e7.py --full")
+        return
 
     banner("2. pilot")
     pilot = a.runs / "pilot_e7"
