@@ -1,0 +1,142 @@
+{
+  "env": {
+    "layouts": [
+      "open",
+      "corridor",
+      "room",
+      "doorway",
+      "two_doorway",
+      "cul_de_sac",
+      "crossing",
+      "boxrooms",
+      "walls_multi",
+      "rooms_multi"
+    ],
+    "agents": [
+      2,
+      8
+    ],
+    "obstacles": [
+      0,
+      6
+    ],
+    "max_agents": 8,
+    "heading": "random",
+    "goal_obs": "bearing",
+    "memory": "gru",
+    "stack_k": 4,
+    "obs_noise": 0.0,
+    "bearing_noise_deg": 0.0,
+    "action_noise": 0.0,
+    "wallmap": "off",
+    "wallmap_every": 4,
+    "odo_noise": "none"
+  },
+  "net": {
+    "memory": "gru",
+    "hidden": 128,
+    "log_std_init": -0.5
+  },
+  "ppo": {
+    "lr": 0.0003,
+    "epochs": 4,
+    "n_minibatches": 4,
+    "clip": 0.2,
+    "ent_coef": 0.0,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "gamma": 0.99,
+    "lam": 0.95,
+    "T": 128,
+    "L": 128,
+    "W": 10,
+    "E": 8,
+    "total_steps": 50000000,
+    "device": "cpu"
+  },
+  "seed": 0,
+  "val_every": 25,
+  "ckpt_every": 25,
+  "reward": {
+    "timeout_penalty": 25.0,
+    "progress_metric": "geodesic"
+  },
+  "sim": {
+    "world": 100.0,
+    "img_size": 512,
+    "agent_radius": 2.0,
+    "fov_deg": 220.0,
+    "fov_range": 22.0,
+    "n_sectors": 16,
+    "rays_per_sector": 1,
+    "max_turn_deg": 25.0,
+    "max_speed": 2.5,
+    "max_steps": 300,
+    "wall_thickness": 3.0,
+    "obstacle_r_min": 4.0,
+    "obstacle_r_max": 10.0,
+    "obstacle_gap": 4.0,
+    "obstacle_clear_agents": 8.0,
+    "obstacle_clear_goal": 6.0,
+    "goal_bonus": 100.0,
+    "collision_penalty": 50.0,
+    "agent_collision_penalty": 25.0,
+    "step_cost": 0.01,
+    "progress_weight": 0.1,
+    "terminate_on_collision": true,
+    "timeout_penalty": 25.0,
+    "progress_metric": "geodesic",
+    "geo_cell": 1.0,
+    "agent_gap": 1.5,
+    "region_margin": 4.0,
+    "cell": 0.25,
+    "min_bottleneck": 5.2,
+    "check_bottleneck": true,
+    "hard_ratio": 0.0,
+    "hard_gap": 0.15,
+    "max_place_tries": 300,
+    "style": {
+      "background": [
+        255,
+        255,
+        255
+      ],
+      "wall_color": [
+        0,
+        0,
+        0
+      ],
+      "obstacle_color": [
+        0,
+        0,
+        0
+      ],
+      "agent_color": [
+        92,
+        45,
+        145
+      ],
+      "start_color": [
+        232,
+        151,
+        58
+      ],
+      "start_alpha": 64,
+      "goal_color": [
+        43,
+        92,
+        230
+      ],
+      "goal_alpha": 89,
+      "agent_line_width": 4.0,
+      "heading_len_mult": 2.2,
+      "region_border_width": 2.0,
+      "region_dash": 10.0,
+      "jitter_line_width": 0.0,
+      "jitter_color": 0.0,
+      "jitter_background": 0.0,
+      "noise_std": 0.0,
+      "blur_sigma": 0.0
+    }
+  }
+}
