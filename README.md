@@ -38,7 +38,7 @@ Generality comes from the observation. Each agent casts 16 rays spread evenly ov
 |---|---|
 | [`sim/`](sim/) | Scene generator and multi-agent simulator: ten layout families, pixel-exact label maps, JSON ground truth, configuration-space validation. See [`sim/README.md`](sim/README.md). |
 | [`perception/`](perception/) | U-Net and geometry extraction trained on `sim/` output, hand-drawn input (current model: v7, `models/sketch7/`), and the design for further input types ([`DESIGN_INPUTS.md`](perception/DESIGN_INPUTS.md)). See [`perception/README.md`](perception/README.md). |
-| [`policy/`](policy/) | Multi-agent PPO, E2 and E3 experiments, ORCA baseline, end-to-end demo. See [`policy/README.md`](policy/README.md). |
+| [`policy/`](policy/) | Multi-agent PPO, E2, E3 and E7 (wall memory) experiments, ORCA baseline, end-to-end demo. See [`policy/README.md`](policy/README.md). |
 | [`pilot/`](pilot/) | Earlier end-to-end pilot (128 × 128, single agent). See [`pilot/README.md`](pilot/README.md). |
 | [`docs/`](docs/) | Proposal, [pending proposal revisions](docs/PROPOSAL_REVISIONS.md), [compute request](docs/COMPUTE_REQUEST.md), figures. |
 | [`requirements.txt`](requirements.txt) | Python dependencies. |
@@ -81,7 +81,7 @@ Cul-de-sac and crossing were designed as hard cases for a locally sensing policy
 
 On 9 real drawings, a visual review found all 9 parses usable, with one tilted box made axis-aligned and overlapping agents in one drawing. Five of the 9 influenced v7, so this is not an independent test; an independent drawing set is still to be collected.
 
-### Steering policy (E2, E3, ORCA)
+### Steering policy (E2, E3, E7, ORCA)
 
 Ten layouts, 2 to 8 agents, ground-truth scenes, fixed `test4` suite (100 scenes per layout, 4 agents). Learned rows are mean ± std over seeds: 5 for E2, 3 for E3. Baselines are one run each.
 
@@ -93,8 +93,28 @@ Ten layouts, 2 to 8 agents, ground-truth scenes, fixed `test4` suite (100 scenes
 | E2 `gru` | rays, bearing, speed | 88.4 ± 2.7% | 8.0 ± 2.6% | 3.6 ± 0.8% |
 | E3 `e3_both` (validation winner) | rays, bearing, speed | 89.3 ± 1.3% | 7.8 ± 1.3% | 2.9 ± 0.1% |
 | `orca_path` | as `orca_straight`, plus a full map and shortest paths | 90.4% | 7.9% | 1.7% |
+| **E7 `e7_map`** | as `e3_both`, plus each agent's own memory of the walls it has seen | **92.6 ± 0.4%** | 5.6 ± 1.5% | 1.8 ± 1.3% |
 
-The policy clearly beats ORCA without route information and ties ORCA with a map, while using less information than either. The reward variants of E3 differ by less than seed noise. These test scenes come from the same layout families the policy trained on; transfer to unseen layouts (E4) has not been measured yet.
+The policy clearly beats ORCA without route information and ties ORCA with a map, while using less information than either. The reward variants of E3 differ by less than seed noise.
+
+**E7, wall memory.** The main failure of `e3_both` was looping: an agent forgets a wall once it leaves the 220° field of view, and walks back into the same dead end. In E7 each agent keeps its own map of the walls its rays have hit, placed by dead reckoning (no global map, no absolute position, unseen space counts as free). From that map it computes a height field, the path distance to the goal around the remembered walls, and the policy gets the downhill direction as two extra numbers. Results on `test4`, 3 seeds each ([tables](policy/results/e7/table_e7.md), [verdict](policy/results/e7/verdict.json)):
+
+| | `e3_both` | `e7_map` |
+|---|---|---|
+| Success | 89.3 ± 1.3% | **92.6 ± 0.4%** |
+| Agents that loop (heading turns through 360°) | 11.1% | **7.4%** |
+| Wall / obstacle collisions | 5.5% | **4.2%** |
+| Agent–agent collisions | 2.3% | **1.4%** |
+| Success at the narrowest bottlenecks (5.2–7 units) | 61% | **75%** |
+
+The gain (3.3 points) is about twice the sum of the seed standard deviations, so it passes the success rule fixed in advance in [`DESIGN_E7.md`](policy/DESIGN_E7.md) §6. The loop rate falls by 32.8%, just short of the one-third rule. A GRU with four times the backpropagation window and no map (`e7_longgru`, one seed) scores 89.8%, so the gain comes from the map and not from longer memory. Odometry drift at evaluation time does not lower success. Crossings remain the weakest layout (83.5%): there the failures are agents jamming into each other, which a wall memory does not address.
+
+<p align="center">
+  <img src="policy/results/e7_gifs/corridor_scene_00131.gif" width="760" alt="The same corridor scene: without wall memory the four agents circle at the entrance; with it all four reach the exit">
+  <br>
+  <em>Same test scene, same starts. Left: <code>e3_both</code>, all four agents loop or crash at the entrance. Right: <code>e7_map</code>, all four reach the exit. More examples, including one where E7 does worse, are in <a href="policy/results/e7_gifs/"><code>policy/results/e7_gifs/</code></a>.</em>
+</p>
+ These test scenes come from the same layout families the policy trained on; transfer to unseen layouts (E4) has not been measured yet.
 
 ### End to end
 
@@ -127,7 +147,8 @@ End-to-end evaluation: the policy acts inside the parsed scene, so perception er
 | E2, baseline policy | Done | `mlp` vs `gru`, 5 seeds |
 | E3, reward | Done | Timeout penalty, geodesic progress, 3 seeds |
 | ORCA baseline | Done | `orca_straight`, `orca_path` |
-| E4, layout transfer | In progress | Leave-one-layout-out |
+| E4, layout transfer | Paused | Leave-one-layout-out; 4 of 10 folds, resumes on cluster compute |
+| E7, wall memory | Done | `e7_map` × 3 seeds, `e7_longgru` control; +3.3 points over `e3_both` |
 | Floor plan and satellite input | Designed | [`DESIGN_INPUTS.md`](perception/DESIGN_INPUTS.md); not trained |
 | E5, E6 | Planned | |
 
@@ -139,6 +160,7 @@ End-to-end evaluation: the policy acts inside the parsed scene, so perception er
 - **E4, layout transfer.** Leave-one-layout-out: train on nine layouts, test on the tenth, rotate.
 - **E5, crowd size.** Performance as the number of agents grows. The resolution and augmentation sweep called "E5" inside `perception/` predates this numbering.
 - **E6, comparison with discovered models.** The same scenarios and metrics as the symbolic framework, plus distilling the policy into a small decision tree.
+- **E7, wall memory.** Each agent's own map of the walls it has seen, fed to the policy as a downhill direction; added after the failure analysis of November 2026 showed that many failures came from loops and dead ends.
 
 Further input types (floor plans, satellite images) parsing into one scene format are the planned scale-up. Proposal changes that are agreed but not yet in the PDF are tracked in [`docs/PROPOSAL_REVISIONS.md`](docs/PROPOSAL_REVISIONS.md).
 

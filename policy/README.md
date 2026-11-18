@@ -75,6 +75,15 @@ It needs the E2 suites and `e3_both_seed{0,1,2}/ckpt_best.pt`.
 Every evaluation now also reports `loop_rate` (the share of agents whose heading
 turns through 360° or more) and a multi-exit subset.
 
+Results (18 Nov 2026, `results/e7/`): `e7_map` 0.926 ± 0.004 test4 success
+against 0.893 ± 0.013 for `e3_both`; loop rate 0.111 → 0.074. Side-by-side GIFs
+of the same scenes (`results/e7_gifs/`):
+
+```bash
+python scripts/e7_gifs.py --suite E:\policy-data\test4 --rank cul_de_sac,doorway,corridor,crossing
+python scripts/e7_gifs.py --suite E:\policy-data\test4 --scenes scene_00131,scene_00505
+```
+
 ## The whole of E2 (training machine, resumable)
 
 ```bash
@@ -135,5 +144,5 @@ before quoting the numbers.
 `_paths.py` (import shim to `sim/`), `policyconfig.py`, `env.py`, `nets.py`,
 `rollout.py`, `ppo.py`, `train.py`, `suites.py`, `evaluate.py`, `aggregate.py`,
 `plots.py`, `orca.py`, `gap.py`, `wallmap.py`, `aggregate_e7.py`, `scripts/make_suites.py`, `scripts/run_e2.py`, `scripts/run_e3.py`,
-`scripts/run_orca.py`, `scripts/run_gap.py`, `scripts/run_e7.py`, `scripts/azure_setup.sh` (`AZURE_E7.md`), `tests/run_tests.py`.
+`scripts/run_orca.py`, `scripts/run_gap.py`, `scripts/run_e7.py`, `scripts/e7_gifs.py`, `scripts/azure_setup.sh` (`AZURE_E7.md`), `tests/run_tests.py`.
 `data/`, `runs/`, `eval/` are git-ignored scratch; `results/e2/` and `results/gap/` are written by the drivers.
