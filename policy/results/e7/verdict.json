@@ -1,0 +1,30 @@
+{
+  "e3_both_success": 0.89275,
+  "e7_map_success": 0.9260277777777778,
+  "success_gain": 0.03327777777777774,
+  "margin_sum_of_stds": 0.01708562330709263,
+  "e3_both_loop_rate": 0.11088888888888888,
+  "e7_map_loop_rate": 0.0745,
+  "loop_rate_drop": 0.32815631262525047,
+  "rule_success": true,
+  "rule_loops": false,
+  "e7_map_helps": true,
+  "seeds": {
+    "e3_both": 3,
+    "e7_map": 3
+  },
+  "e3_both_static_collision_rate": 0.05505555555555555,
+  "e7_map_static_collision_rate": 0.041888888888888885,
+  "e3_both_agent_collision_rate": 0.023000000000000003,
+  "e7_map_agent_collision_rate": 0.013999999999999999,
+  "odo_high_success_loss": -0.0064722222222222126,
+  "propose_training_with_drift": false,
+  "baseline_check": {
+    "e3_both_seed0": "identical",
+    "e3_both_seed1": "identical",
+    "e3_both_seed2": "identical",
+    "orca_path": "identical",
+    "orca_straight": "identical"
+  },
+  "baseline_reproduced": true
+}
