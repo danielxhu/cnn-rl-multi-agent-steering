@@ -1016,6 +1016,29 @@ def test_timeout_penalty_once():
             assert np.allclose(rs[:2, i], -0.01) and abs(rs[2, i] - (-0.01 - pen)) < 1e-12, rs[:, i]
 
 
+@test
+def test_novel_layouts_test_only():
+    """E8 families: valid scenes, never in a training mix; blocked_exit's nearer
+    exit is unreachable and the farther one reachable."""
+    from layouts import LAYOUTS, MIXES, NOVEL_LAYOUTS, random_scene
+    from reachability import _labels, _labels_in_region, cell_of, clearance, free_mask, occupancy
+    cfg = Config()
+    for L in NOVEL_LAYOUTS:
+        assert L not in LAYOUTS and all(L not in v for v in MIXES.values()), L
+        for k in range(5):
+            s = random_scene(np.random.default_rng([31, k]), cfg, layout=L, n_agents=4, n_obstacles=3)
+            assert s is not None and s.layout == L and len(s.agents) >= 1, (L, k)
+            assert s.bottleneck >= cfg.min_bottleneck, (L, k, s.bottleneck)
+            if L == "blocked_exit":
+                lab = _labels(free_mask(clearance(cfg, occupancy(cfg, s)), cfg.agent_radius))
+                a, b = s.exits
+                for ag in s.agents:
+                    here = int(lab[cell_of(cfg, ag.pos)])
+                    assert a.distance_to(ag.pos) < b.distance_to(ag.pos)
+                    assert here not in _labels_in_region(lab, cfg, a)
+                    assert here in _labels_in_region(lab, cfg, b)
+
+
 def main():
     if "--write-hashes" in sys.argv:
         write_reference_hashes()

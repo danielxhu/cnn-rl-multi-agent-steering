@@ -17,6 +17,12 @@ Invariants:
   call right after ``reset``), for every agent; agents no longer active are
   left untouched and get zero extra columns.
 - The memory of one scene never leaks into the next: ``reset`` clears it.
+- ``exit_rule = "orbit"`` (evaluation option, 20 Nov 2026; default
+  ``"enclosed"`` is the trained rule): besides the enclosure test, an agent
+  whose direction to its target exit (estimated heading + bearing) has turned
+  through 360° in one sense has circled the exit without getting in; the exit
+  is marked blocked and the next one taken. Uses only the bearing and
+  odometry, like the rest of the memory.
 """
 from __future__ import annotations
 
@@ -40,6 +46,7 @@ LEAK_GUARD = 0.6            # a field cell with any point this close to a seen s
 DESCENT_STEPS = 3           # downhill: steepest-descent steps on the field (6 units)
 _NBRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 FIELD_REACH = 2             # wavefront moves up to (2, 1): 16 directions (reachability.geodesic_wavefront)
+ORBIT_TURN = 2 * math.pi       # exit_rule "orbit": switch after the target direction turns this far
 ODO_SIGMA = {"none": (0.0, 0.0), "low": (0.02, 0.5), "high": (0.05, 2.0)}   # (speed frac, turn deg)
 
 
@@ -67,7 +74,10 @@ def _segment_points(p, q):
 
 
 class WallMemory:
-    def __init__(self, sim_cfg, env_cfg, rng=None):
+    def __init__(self, sim_cfg, env_cfg, rng=None, exit_rule="enclosed"):
+        if exit_rule not in ("enclosed", "orbit"):
+            raise ValueError(f"exit_rule must be 'enclosed' or 'orbit', not {exit_rule!r}")
+        self.exit_rule = exit_rule
         self.c = sim_cfg
         self.every = int(env_cfg.wallmap_every)
         sv, st = ODO_SIGMA[env_cfg.odo_noise]
@@ -97,6 +107,8 @@ class WallMemory:
                        for i, g in enumerate(self.goals)]
         self.blocked = [set() for _ in range(n)]
         self.switches = np.zeros(n, int)
+        self.orbit = np.zeros(n)                  # turning of the direction to the target (rad)
+        self.prev_dir = [None] * n
         self.field = [None] * n
         self.computed = np.zeros(n, bool)
         self.started = False
@@ -189,16 +201,35 @@ class WallMemory:
             self.field[i] = fld
             if len(g) == 1 or fld is None or np.isfinite(self._value(fld, self.est_pos[i])):
                 return
-            self.blocked[i].add(self.target[i])
-            if len(self.blocked[i]) >= len(g):
-                self.blocked[i] = set()
-            p = tuple(sim.pos[i])
-            cand = [k for k in range(len(g)) if k not in self.blocked[i]]
-            new = min(cand, key=lambda k: g[k].distance_to(p))
-            if new == self.target[i]:
+            if not self._switch(i, sim):
                 return
-            self.target[i] = new
-            self.switches[i] += 1
+
+    def _switch(self, i, sim) -> bool:
+        """Mark the target blocked and take the nearest other exit; False if unchanged."""
+        g = self.goals[i]
+        self.blocked[i].add(self.target[i])
+        if len(self.blocked[i]) >= len(g):
+            self.blocked[i] = set()
+        p = tuple(sim.pos[i])
+        cand = [k for k in range(len(g)) if k not in self.blocked[i]]
+        new = min(cand, key=lambda k: g[k].distance_to(p))
+        self.orbit[i], self.prev_dir[i] = 0.0, None
+        if new == self.target[i]:
+            return False
+        self.target[i] = new
+        self.switches[i] += 1
+        return True
+
+    def _orbit_check(self, i, sim, bearing) -> bool:
+        """Accumulate the turning of the direction to the target; switch at 360°."""
+        a = self.est_head[i] + bearing * math.pi
+        if self.prev_dir[i] is not None:
+            self.orbit[i] += wrap(a - self.prev_dir[i])
+        self.prev_dir[i] = a
+        if abs(self.orbit[i]) >= ORBIT_TURN and self._switch(i, sim):
+            self.update_field(i, sim)
+            return True
+        return False
 
     def downhill(self, i, bearing) -> np.ndarray:
         """(cos, sin) of the downhill direction relative to the estimated heading.
@@ -274,5 +305,8 @@ class WallMemory:
             if len(self.goals[i]) > 1:
                 out[i, bcol] = bearing_to(self.goals[i][self.target[i]], sim.pos[i],
                                           sim.heading[i])
+                if self.exit_rule == "orbit" and self._orbit_check(i, sim, float(out[i, bcol])):
+                    out[i, bcol] = bearing_to(self.goals[i][self.target[i]], sim.pos[i],
+                                              sim.heading[i])
             out[i, d:] = self.downhill(i, float(out[i, bcol]))
         return out

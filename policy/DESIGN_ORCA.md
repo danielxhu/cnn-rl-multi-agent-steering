@@ -218,3 +218,32 @@ which section was updated.
 - `aggregate.py --include REGEX`: on the training machine `E:\policy-eval` holds E2 and E3 runs, and under `--group controller` the E3 runs (controller `gru`) would join E2's `gru` column; `run_orca.py` re-aggregates E2 with `--include "^(greedy|orca_(straight|path)|e2_(mlp|gru)_seed\d+)$"`. Default (no `--include`) is unchanged. [§3]
 - `run_orca.py` first checks that the suites exist; `--no-push` also skips the pull; the pull uses `--autostash` (as `run_e3.py`). [§3]
 - `fig_paths.png` default series are now named explicitly (`greedy mlp gru`) instead of "every column", so adding ORCA columns does not add ORCA paths. Same figure as before when there is no ORCA. [§3]
+
+## 10. Wall model fix (20 Nov 2026)
+
+**Problem.** §2.2 approximated each wall capsule by one disk of radius
+`wall_half` at the wall's nearest point. ORCA keeps the agent out of that disk
+only, so an agent sliding along a wall, or turning round a wall end, could
+steer into the rest of the wall. On `test4` this cost little (3.0 % static
+collisions for `orca_path`), but on the E8 layouts with long walls and
+180° turns round wall ends it dominated (40–74 % static collisions).
+
+**Fix.** `walls="chain"` (now the default): each capsule is covered by disks
+of radius `wall_half` every `WALL_STEP = 1.0` along it (closer than
+`wall_half`, so the chain leaves no gap); disks whose surface is within
+`WALL_REACH = 8.0` are used (`tau_obs · max_speed = 7.5`, so farther disks
+cannot constrain a step). `walls="nearest"` (`evaluate.py --orca-walls
+nearest`) is the old model and reproduces every earlier ORCA number
+(`orca_path` on `test4`: 0.904, identical).
+
+**Effect** (Mac, same suites; `results/orca_chain/`):
+
+| suite | `orca_straight` old → chain | `orca_path` old → chain |
+|---|---|---|
+| test4 | 0.617 → 0.705 | 0.904 → **0.927** |
+| test_mixed | – → 0.684 | 0.885 → 0.901 |
+| novel (E8) | 0.000 → 0.112 | 0.512 → 0.814 |
+
+Static collisions fall to 0.2–0.5 % everywhere. The ORCA columns of the E2,
+E3 and E7 tables were made with the old model and are kept as recorded; the
+README quotes the chain numbers.

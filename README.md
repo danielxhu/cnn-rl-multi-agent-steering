@@ -88,14 +88,14 @@ Ten layouts, 2 to 8 agents, ground-truth scenes, fixed `test4` suite (100 scenes
 | Method | Information | Success | Collision | Timeout |
 |---|---|---|---|---|
 | Greedy | goal bearing | 24.2% | 75.7% | 0.0% |
-| `orca_straight` | goal bearing, exact nearby geometry and agents | 61.7% | 25.8% | 12.5% |
+| `orca_straight` | goal bearing, exact nearby geometry and agents | 70.5% | 6.0% | 23.5% |
 | E2 `mlp` | rays, bearing, speed | 81.7 ± 0.6% | 9.1 ± 1.6% | 9.3 ± 1.6% |
 | E2 `gru` | rays, bearing, speed | 88.4 ± 2.7% | 8.0 ± 2.6% | 3.6 ± 0.8% |
 | E3 `e3_both` (validation winner) | rays, bearing, speed | 89.3 ± 1.3% | 7.8 ± 1.3% | 2.9 ± 0.1% |
-| `orca_path` | as `orca_straight`, plus a full map and shortest paths | 90.4% | 7.9% | 1.7% |
+| `orca_path` | as `orca_straight`, plus a full map and shortest paths | 92.7% | 5.3% | 1.9% |
 | **E7 `e7_map`** | as `e3_both`, plus each agent's own memory of the walls it has seen | **92.6 ± 0.4%** | 5.6 ± 1.5% | 1.8 ± 1.3% |
 
-The policy clearly beats ORCA without route information and ties ORCA with a map, while using less information than either. The reward variants of E3 differ by less than seed noise.
+The ORCA rows use the corrected wall model of 20 November 2026 ([`DESIGN_ORCA.md`](policy/DESIGN_ORCA.md) §10); the earlier model approximated each wall by a single disk and scored 61.7% and 90.4%. The learned policy clearly beats ORCA without route information. With its own wall memory (E7) it ties ORCA that is given the full map and shortest paths on `test4` (92.6% vs 92.7%) and beats it on `test_mixed`, where up to 8 agents share a scene (91.8% vs 90.1%), while using less information. The reward variants of E3 differ by less than seed noise.
 
 **E7, wall memory.** The main failure of `e3_both` was looping: an agent forgets a wall once it leaves the 220° field of view, and walks back into the same dead end. In E7 each agent keeps its own map of the walls its rays have hit, placed by dead reckoning (no global map, no absolute position, unseen space counts as free). From that map it computes a height field, the path distance to the goal around the remembered walls, and the policy gets the downhill direction as two extra numbers. Results on `test4`, 3 seeds each ([tables](policy/results/e7/table_e7.md), [verdict](policy/results/e7/verdict.json)):
 

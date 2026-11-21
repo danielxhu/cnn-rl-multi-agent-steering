@@ -105,8 +105,9 @@ class PolicyController:
     """A trained actor-critic acting on the 50-number (or stacked) observation."""
 
     def __init__(self, run_cfg: RunConfig, weights: dict, deterministic=True, seed=0,
-                 odo_noise=None):
+                 odo_noise=None, exit_rule="enclosed"):
         self.cfg, self.det = run_cfg, deterministic
+        self.exit_rule = exit_rule
         self.seed = seed
         self.odo_noise = odo_noise or getattr(run_cfg.env, "odo_noise", "none")
         torch.set_num_threads(1)
@@ -132,7 +133,8 @@ class PolicyController:
                 import zlib
                 key = zlib.crc32(json.dumps(sim.scene.as_dict(), sort_keys=True).encode())
                 rng = np.random.default_rng([self.seed, key])
-            self.wm = WallMemory(sim.cfg, replace(ec, odo_noise=self.odo_noise), rng)
+            self.wm = WallMemory(sim.cfg, replace(ec, odo_noise=self.odo_noise), rng,
+                                 exit_rule=self.exit_rule)
             self.wm.reset(sim)
 
     @property
@@ -246,9 +248,10 @@ def _eval_chunk(args):
     """Worker: a list of scene dicts -> rows. Module-level so ``spawn`` can pickle it."""
     cfg_dict, weights, scene_dicts, sim_dict, deterministic, seed = args[:6]
     odo = args[6] if len(args) > 6 else None
+    exit_rule = args[7] if len(args) > 7 else "enclosed"
     cfg = RunConfig.from_dict(cfg_dict)
     sim_cfg = sim_config_from_dict(sim_dict)
-    ctrl = PolicyController(cfg, weights, deterministic, seed, odo)
+    ctrl = PolicyController(cfg, weights, deterministic, seed, odo, exit_rule)
     return [run_episode(Scene.from_dict(d), ctrl, sim_cfg) for d in scene_dicts]
 
 
@@ -260,9 +263,10 @@ def _greedy_chunk(args):
 
 def _orca_chunk(args):
     from orca import ORCAController
-    mode, scene_dicts, sim_dict = args
+    mode, scene_dicts, sim_dict = args[:3]
+    walls = args[3] if len(args) > 3 else "chain"
     sim_cfg = sim_config_from_dict(sim_dict)
-    ctrl = ORCAController(mode)
+    ctrl = ORCAController(mode, walls=walls)
     return [run_episode(Scene.from_dict(d), ctrl, sim_cfg) for d in scene_dicts]
 
 
@@ -378,12 +382,16 @@ def main(argv=None):
     g.add_argument("--ckpt", type=Path)
     g.add_argument("--greedy", action="store_true")
     g.add_argument("--orca", choices=["straight", "path"], help="ORCA baseline (DESIGN_ORCA.md)")
+    ap.add_argument("--orca-walls", choices=["chain", "nearest"], default="chain",
+                    help="ORCA wall model; 'nearest' reproduces results before 20 Nov 2026")
     ap.add_argument("--suites", default="test4,test_mixed")
     ap.add_argument("--data-root", type=Path, default=Path("data"))
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--stochastic", action="store_true")
     ap.add_argument("--seed", type=int, default=0, help="sampling seed with --stochastic")
+    ap.add_argument("--exit-rule", choices=["enclosed", "orbit"], default="enclosed",
+                    help="wall memory: switch exits also after circling one (DESIGN_E7.md §11)")
     ap.add_argument("--odo-noise", choices=["none", "low", "high"], default=None,
                     help="odometry drift of the E7 wall memory (DESIGN_E7.md §5.3)")
     a = ap.parse_args(argv)
@@ -398,9 +406,9 @@ def main(argv=None):
     elif a.orca:
         from orca import ORCAController
         identity = {"controller": "orca", "variant": f"orca_{a.orca}", "seed": None,
-                    "ckpt": None}
-        factory = lambda: ORCAController(a.orca)
-        make_args = lambda dicts: (_orca_chunk, (a.orca, dicts, asdict(sim_cfg)))
+                    "ckpt": None, "orca_walls": a.orca_walls}
+        factory = lambda: ORCAController(a.orca, walls=a.orca_walls)
+        make_args = lambda dicts: (_orca_chunk, (a.orca, dicts, asdict(sim_cfg), a.orca_walls))
     else:
         _, cfg, trained_cfg, ck = load_policy(a.ckpt, not a.stochastic, a.seed)
         check_physics(trained_cfg, sim_cfg, a.ckpt)
@@ -413,9 +421,15 @@ def main(argv=None):
             if not wallmap_on(cfg.env):
                 raise SystemExit("--odo-noise needs a checkpoint trained with --wallmap on")
             identity["odo_noise"] = a.odo_noise
-        factory = lambda: PolicyController(cfg, weights, not a.stochastic, a.seed, a.odo_noise)
+        if a.exit_rule != "enclosed":
+            if not wallmap_on(cfg.env):
+                raise SystemExit("--exit-rule needs a checkpoint trained with --wallmap on")
+            identity["exit_rule"] = a.exit_rule
+        factory = lambda: PolicyController(cfg, weights, not a.stochastic, a.seed, a.odo_noise,
+                                           a.exit_rule)
         make_args = lambda dicts: (_eval_chunk, (cfg.to_dict(), weights, dicts, asdict(sim_cfg),
-                                                 not a.stochastic, a.seed, a.odo_noise))
+                                                 not a.stochastic, a.seed, a.odo_noise,
+                                                 a.exit_rule))
     m = evaluate_suites(factory, make_args, suites, a.workers, a.out, identity, sim_cfg)
     for sname, sm in m["suites"].items():
         print(f"\n{sname}  ({sm['overall']['scenes']} scenes)   success  collision  timeout")

@@ -368,3 +368,34 @@ Implemented 16 Nov 2026. All 58 policy tests and 35 sim tests pass on the Mac.
    and `multi_exit`, plus a `multi_exit` block per suite. `val.csv` and the
    `val` dict in `ckpt_best.pt` are unchanged. `config.json` gains
    `wallmap`, `wallmap_every` and `odo_noise`.
+
+## 11. Exit rule "orbit" (20 Nov 2026, evaluation option)
+
+**Why.** On the E8 `blocked_exit` scenes (the nearer exit sealed behind a slit)
+`e7_map` scored 0.008: the lock (§1.4) never released. The field's target is
+method A's far point at the world's edge, beyond the exit, so a sealed exit
+never makes the agent's cell unreachable; the agent circles the sealed exit
+until timeout. Without any lock (nearest exit at every field update) the same
+checkpoint scores 0.862, so the lock itself was the failure.
+
+**Rule (chosen by the author).** `exit_rule = "orbit"` keeps the lock and the
+enclosure test and adds: per agent, accumulate the signed turning of the
+direction to the target exit (estimated heading + bearing); when it reaches
+`ORBIT_TURN` in one sense, the agent has gone round the exit without getting
+in, so the exit is marked blocked and the next one taken (same ranking as
+§1.4). Only the bearing and odometry are used. `evaluate.py --exit-rule
+orbit`; the default `"enclosed"` is the trained rule, so every earlier result
+is unchanged. No retraining: the rule is fixed, not learned.
+
+**First numbers** (`e7_map_seed0`, first 40 `blocked_exit` scenes):
+
+| rule | success | agent collisions | timeout |
+|---|---|---|---|
+| enclosed (trained) | 0.013 | – | 0.525 |
+| orbit, 360° | 0.537 | 0.275 | 0.087 |
+| orbit, 270° | 0.750 | 0.200 | 0.006 |
+| orbit, 180° | 0.881 | 0.075 | 0.006 |
+| no lock (reference) | 0.862 | – | 0.065 |
+
+`ORBIT_TURN` is 360° pending the author's choice; a full turn lets four
+agents circle together for long enough to collide.

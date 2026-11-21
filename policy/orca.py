@@ -23,6 +23,12 @@ Invariants:
   half-planes are relaxed (the paper's 3-D program).
 - ORCA reads exact positions and velocities from the simulator (more than the
   learned policy's 50 numbers); that is the point of the baseline (§0).
+- Walls (``walls="chain"``, the default since 20 Nov 2026): each wall capsule
+  is covered by disks of radius ``wall_half`` every ``WALL_STEP`` along it,
+  those whose surface lies within ``WALL_REACH``. The old ``walls="nearest"``
+  (one disk per wall, at its nearest point; every result before that date)
+  let agents slide off the single disk into the rest of the wall at wall ends
+  and long walls (DESIGN_ORCA.md §10).
 - ``map_scene`` (DESIGN_GAP.md §5) replaces only the walls and obstacles the
   controller plans around; agents, goals and physics stay the simulator's. None
   (the default) plans on the simulator's own scene.
@@ -38,6 +44,8 @@ import numpy as np
 
 EPS = 1e-9
 N_PATH_DIRS = 32                       # candidate directions of orca_path (§1)
+WALL_STEP = 1.0                        # chain walls: disk spacing (< wall_half: no gaps)
+WALL_REACH = 8.0                       # chain walls: disks this close (surface); > tau_obs*max_speed
 # Exact symmetry deadlocks ORCA: heading straight at a disk's centre, or into
 # mirror-image partners (four agents swapping across a point), puts the LP's
 # optimum on a vertex or line exactly on the axis, and the agents slow to a
@@ -262,10 +270,13 @@ class ORCAController:
     """evaluate.py's controller protocol: ``reset(sim)``, ``act(sim, obs51)``."""
 
     def __init__(self, mode="straight", tau=5.0, tau_obs=3.0, margin=0.3, neighbor_dist=None,
-                 max_neighbors=10, map_scene=None):
+                 max_neighbors=10, map_scene=None, walls="chain"):
         if mode not in ("straight", "path"):
             raise ValueError(f"mode must be 'straight' or 'path', not {mode!r}")
+        if walls not in ("chain", "nearest"):
+            raise ValueError(f"walls must be 'chain' or 'nearest', not {walls!r}")
         self.mode = mode
+        self.wall_mode = walls
         self.name = f"orca_{mode}"
         self._kw = dict(tau=tau, tau_obs=tau_obs, margin=margin, max_neighbors=max_neighbors)
         self._neighbor_dist = neighbor_dist
@@ -278,6 +289,10 @@ class ORCAController:
         self.obs_c = np.array([o.c for o in world.obstacles], float).reshape(-1, 2)
         self.obs_r = np.array([o.r for o in world.obstacles], float).reshape(-1)
         self.walls = [(np.asarray(a, float), np.asarray(b, float)) for a, b in world.walls]
+        self.wall_pts = []
+        for a, b in self.walls:
+            n = max(2, int(math.ceil(float(np.linalg.norm(b - a)) / WALL_STEP)) + 1)
+            self.wall_pts.append(a[None, :] + np.linspace(0.0, 1.0, n)[:, None] * (b - a)[None, :])
         self.goals = [sim.scene.goal_for(a) for a in sim.scene.agents]
         self.fields = {}
         self.no_path_steps = 0                         # agent-steps with no finite path (read only)
@@ -324,11 +339,18 @@ class ORCAController:
             d = math.hypot(c[0] - p[0], c[1] - p[1]) - r
             if d <= nd:
                 out.append((d, (float(c[0]), float(c[1])), float(r)))
-        for a, b in self.walls:                        # one disk per wall, at its nearest point
-            q = _seg_nearest(p, a, b)
-            d = math.hypot(q[0] - p[0], q[1] - p[1]) - cfg.wall_half
-            if d <= nd:
-                out.append((d, (float(q[0]), float(q[1])), cfg.wall_half))
+        if self.wall_mode == "nearest":
+            for a, b in self.walls:                    # one disk per wall, at its nearest point
+                q = _seg_nearest(p, a, b)
+                d = math.hypot(q[0] - p[0], q[1] - p[1]) - cfg.wall_half
+                if d <= nd:
+                    out.append((d, (float(q[0]), float(q[1])), cfg.wall_half))
+        else:
+            reach = min(nd, WALL_REACH)
+            for pts in self.wall_pts:                  # disk chain covering the capsule
+                d = np.hypot(pts[:, 0] - p[0], pts[:, 1] - p[1]) - cfg.wall_half
+                for k in np.flatnonzero(d <= reach):
+                    out.append((float(d[k]), (float(pts[k, 0]), float(pts[k, 1])), cfg.wall_half))
         out.sort(key=lambda t: t[0])
         return [(c, r) for _, c, r in out]
 

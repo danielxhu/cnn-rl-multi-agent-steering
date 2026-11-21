@@ -55,6 +55,19 @@ Sketch v7 (DESIGN_SKETCH §11.2) adds, again off by default, for ``--layout mixe
     long_line_prob      per scene: a free-standing wall U(25, 70) long parallel
                         to a box's long side at U(4, 20)
 
+Test-only families (policy generalisation; not in LAYOUTS, MIXES or the policy's
+training layouts, so no existing dataset or suite changes):
+
+    l_turn        an L-shaped corridor: the goal is round a 90° corner
+    switchback    two long walls, gaps at alternate ends: the goal is straight
+                  ahead through the walls, the path goes back and forth
+    maze          three walls with one gap each, gaps alternating high / low
+    u_trap        the goal sits inside a U of walls whose open side faces away
+                  from the start: the straight line leads into the closed back
+    blocked_exit  two exits; the one nearer the start is sealed behind a slit
+                  too narrow to pass (it looks open), the other is open
+                  (``dead_exits``: only the start-to-some-exit link is checked)
+
 Every scene is validated before it is returned: start must reach goal for a
 disk of the agent's radius, and the tightest passage must exceed min_bottleneck.
 With several boxes every agent must reach at least one exit, every exit must
@@ -86,6 +99,8 @@ from scene import Agent, Obstacle, Region, Scene, boundary_walls
 LAYOUTS = ["open", "corridor", "room", "doorway", "two_doorway", "cul_de_sac", "crossing"]
 FREE_LAYOUTS = ["walls", "rooms"]
 MULTI_LAYOUTS = ["boxrooms", "walls_multi", "rooms_multi"]       # several start / exit boxes
+# test-only families (policy generalisation, E8): never in LAYOUTS, MIXES or any training set
+NOVEL_LAYOUTS = ["l_turn", "switchback", "maze", "u_trap", "blocked_exit"]
 # layout cycles generate.py samples from; "mixed2" is ~40 % free-form; "mixed3"
 # (sketch v5) adds a third of rooms-next-to-boxes and multi-box scenes
 MIXES = {"mixed": LAYOUTS,
@@ -137,6 +152,7 @@ class LayoutSpec:
     exits: list | None = None
     rooms: list | None = None      # boxrooms: each room's outline (for tests)
     hard: dict | None = None       # hard cases applied (counts; DESIGN_SKETCH §10.2)
+    dead_exits: bool = False       # blocked_exit: an exit may be unreachable on purpose
 
 
 def rect_outline(x0, y0, x1, y1):
@@ -768,6 +784,116 @@ def _boxrooms(rng, cfg, tries=10, opts=DEFAULT_OPTIONS):
     return _open(rng, cfg)
 
 
+# ------------------------------------------- test-only families (NOVEL_LAYOUTS)
+
+def _flip(spec, W, fx, fy):
+    """The spec mirrored in x and / or y (variety without new geometry)."""
+    if not (fx or fy):
+        return spec
+    def pt(q):
+        return (W - q[0] if fx else q[0], W - q[1] if fy else q[1])
+    def reg(r):
+        x0, x1 = (W - r.x1, W - r.x0) if fx else (r.x0, r.x1)
+        y0, y1 = (W - r.y1, W - r.y0) if fy else (r.y0, r.y1)
+        return Region(x0, y0, x1, y1)
+    return replace(spec, walls=[(pt(a), pt(b)) for a, b in spec.walls],
+                   groups=[(reg(a), reg(b)) for a, b in spec.groups],
+                   place_zone=reg(spec.place_zone),
+                   starts=[reg(r) for r in spec.starts] if spec.starts else None,
+                   exits=[reg(r) for r in spec.exits] if spec.exits else None)
+
+
+def _l_turn(rng, cfg):
+    """Corridor from the left that turns 90° up; goal at the top end."""
+    W, m = cfg.world, _margin(cfg)
+    w = rng.uniform(22.0, 30.0)
+    y0 = rng.uniform(8.0, 30.0)
+    xr = rng.uniform(62.0, 90.0)
+    walls = boundary_walls(W) + [((0.0, y0), (xr, y0)), ((xr, y0), (xr, W)),
+                                 ((0.0, y0 + w), (xr - w, y0 + w)), ((xr - w, y0 + w), (xr - w, W))]
+    spec = LayoutSpec(
+        walls=walls,
+        groups=[(Region(m, y0 + m, m + 12, y0 + w - m),
+                 Region(xr - w + m, W - m - 12, xr - m, W - m))],
+        place_zone=Region(20, y0 + m, xr - m, y0 + w - m),
+        name="l_turn")
+    return _flip(spec, W, False, rng.random() < 0.5)
+
+
+def _switchback(rng, cfg):
+    """Two horizontal walls, the lower open at the right end, the upper at the left;
+    start bottom-left, goal top-left: the bearing points straight through both."""
+    W, m = cfg.world, _margin(cfg)
+    ya, yb = rng.uniform(28.0, 36.0), rng.uniform(62.0, 70.0)
+    g1, g2 = rng.uniform(12.0, 20.0), rng.uniform(12.0, 20.0)
+    walls = boundary_walls(W) + [((0.0, ya), (W - g1, ya)), ((g2, yb), (W, yb))]
+    spec = LayoutSpec(
+        walls=walls,
+        groups=[(Region(m, m, m + 14, ya - m), Region(m, yb + m, m + 14, W - m))],
+        place_zone=Region(24, m, W - m, W - m),
+        name="switchback")
+    return _flip(spec, W, rng.random() < 0.5, False)
+
+
+def _maze(rng, cfg):
+    """Three vertical walls, one gap each, alternating near the bottom and the top."""
+    W, m = cfg.world, _margin(cfg)
+    xs = [rng.uniform(26.0, 32.0), rng.uniform(47.0, 53.0), rng.uniform(68.0, 74.0)]
+    low = rng.random() < 0.5
+    walls = boundary_walls(W)
+    for k, x in enumerate(xs):
+        w = rng.uniform(10.0, 16.0)
+        y = rng.uniform(12.0, 28.0) if (k % 2 == 0) == low else rng.uniform(W - 28.0, W - 12.0)
+        walls += _gap_wall(x, [(y, w)], W)
+    return LayoutSpec(
+        walls=walls,
+        groups=[(Region(m, m, m + 12, W - m), Region(W - m - 12, m, W - m, W - m))],
+        place_zone=Region(xs[0] + m, m, xs[2] - m, W - m),
+        name="maze")
+
+
+def _u_trap(rng, cfg):
+    """The goal inside a U of walls open to the right; the start on the left."""
+    W, m = cfg.world, _margin(cfg)
+    xu = rng.uniform(44.0, 54.0)
+    d = rng.uniform(20.0, 28.0)
+    h = rng.uniform(30.0, 46.0)
+    yc = W / 2 + rng.uniform(-10.0, 10.0)
+    b, tp = yc - h / 2, yc + h / 2
+    walls = boundary_walls(W) + [((xu + d, b), (xu, b)), ((xu, b), (xu, tp)), ((xu, tp), (xu + d, tp))]
+    goal = Region(xu + m, b + m, xu + m + 10, tp - m)
+    spec = LayoutSpec(
+        walls=walls,
+        groups=[(Region(m, m, m + 13, W - m), goal)],
+        place_zone=Region(20, m, xu - m - 4, W - m),
+        name="u_trap")
+    return _flip(spec, W, False, rng.random() < 0.5)
+
+
+def _blocked_exit(rng, cfg):
+    """Exit A straight ahead behind a slit too narrow to pass; exit B open, further away."""
+    W, m = cfg.world, _margin(cfg)
+    xa = rng.uniform(46.0, 56.0)
+    ya = W / 2 + rng.uniform(-10.0, 10.0)
+    s = rng.uniform(2.0, 3.2)               # slit between wall surfaces < agent diameter 4
+    d, h = 18.0, 26.0
+    lo, hi = ya - h / 2, ya + h / 2
+    half = cfg.wall_half
+    walls = boundary_walls(W) + [
+        ((xa, lo), (xa + d, lo)), ((xa + d, lo), (xa + d, hi)), ((xa + d, hi), (xa, hi)),
+        ((xa, lo), (xa, ya - s / 2 - half)), ((xa, ya + s / 2 + half), (xa, hi)),
+    ]
+    exit_a = Region(xa + m, ya - 6.0, xa + m + 8.0, ya + 6.0)
+    corner_top = rng.random() < 0.5
+    yb0 = W - m - 14 if corner_top else m
+    exit_b = Region(W - m - 14, yb0, W - m, yb0 + 14)
+    start = Region(m, ya - 16.0, m + 13, ya + 16.0)
+    return LayoutSpec(
+        walls=walls, groups=[(start, exit_a)],
+        place_zone=Region(22, m, xa - m - 4, W - m),
+        name="blocked_exit", starts=[start], exits=[exit_a, exit_b], dead_exits=True)
+
+
 BUILDERS = {
     "open": _open,
     "corridor": _corridor,
@@ -781,6 +907,11 @@ BUILDERS = {
     "boxrooms": _boxrooms,
     "walls_multi": _walls_multi,
     "rooms_multi": _rooms_multi,
+    "l_turn": _l_turn,
+    "switchback": _switchback,
+    "maze": _maze,
+    "u_trap": _u_trap,
+    "blocked_exit": _blocked_exit,
 }
 
 
@@ -951,7 +1082,8 @@ def _hard_cases(rng, cfg, spec, opts):
 def _links_ok(cfg, spec, clear) -> bool:
     """The spec's boxes still linked for an agent (every start to an exit, every pair)."""
     if spec.starts is not None:
-        return _boxes_linked(cfg, spec.starts, spec.exits, cfg.agent_radius, clear)
+        return _boxes_linked(cfg, spec.starts, spec.exits, cfg.agent_radius, clear,
+                             dead_exits=spec.dead_exits)
     probe = Scene(walls=spec.walls)
     for start, goal in spec.groups:
         probe.start_region, probe.goal_region = start, goal
@@ -1028,7 +1160,7 @@ def _place_obstacles(rng, cfg, scene, spec, n, builder, opts=DEFAULT_OPTIONS):
                 continue
             trial = builder.trial(c, r)
             if not _boxes_linked(cfg, spec.starts, spec.exits, cfg.agent_radius,
-                                 clearance(cfg, trial)):
+                                 clearance(cfg, trial), dead_exits=spec.dead_exits):
                 continue
             builder.commit(c, r)
             scene.obstacles.append(Obstacle(c, r))
@@ -1058,12 +1190,14 @@ def _place_obstacles(rng, cfg, scene, spec, n, builder, opts=DEFAULT_OPTIONS):
         scene.obstacles.append(Obstacle(c, r))
 
 
-def _boxes_linked(cfg, starts, exits, radius, clear) -> bool:
-    """Every start box reaches an exit and every exit is reached from a start box."""
+def _boxes_linked(cfg, starts, exits, radius, clear, dead_exits=False) -> bool:
+    """Every start box reaches an exit and (unless ``dead_exits``) every exit is
+    reached from a start box."""
     lab = _labels(free_mask(clear, radius))
     s_lab = [_labels_in_region(lab, cfg, b) for b in starts]
     e_lab = [_labels_in_region(lab, cfg, b) for b in exits]
-    return all(any(a & b for b in e_lab) for a in s_lab) and all(any(a & b for a in s_lab) for b in e_lab)
+    fwd = all(any(a & b for b in e_lab) for a in s_lab)
+    return fwd and (dead_exits or all(any(a & b for a in s_lab) for b in e_lab))
 
 
 def _close_spot(rng, cfg, start, mates, d):
@@ -1211,7 +1345,8 @@ def random_scene(rng, cfg=None, layout="open", n_agents=1, n_obstacles=0,
             if not scene.agents:
                 continue
             starts = [spec.starts[i] for i in used]          # a start box without agents is no start
-            if not _boxes_linked(cfg, starts, spec.exits, cfg.agent_radius, clear):
+            if not _boxes_linked(cfg, starts, spec.exits, cfg.agent_radius, clear,
+                                 dead_exits=spec.dead_exits):
                 continue
             if len(starts) == 1 and len(spec.exits) == 1:   # one of each: the single-box form
                 scene.groups = [(starts[0], spec.exits[0])]

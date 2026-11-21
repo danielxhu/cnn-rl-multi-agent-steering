@@ -1369,15 +1369,30 @@ def _orca_map_run(scene, mode="path", **kw):
 
 @test
 def test_orca_default_behaviour_matches_the_recorded_baseline():
-    """Numbers recorded from orca.py before ``map_scene`` existed (commit eacc889)."""
+    """Numbers recorded from orca.py before ``map_scene`` existed (commit eacc889);
+    the old wall model (``walls="nearest"``) still reproduces them."""
     for mode, steps, outcome, final in (
             ("straight", 11, ["collision"] * 3,
              [[46.701, 43.892], [46.673, 28.89], [53.368, 70.956]]),
             ("path", 34, ["goal"] * 3,
              [[70.62, 53.075], [71.625, 30.908], [29.185, 67.162]])):
-        sim, _ = _orca_map_run(_orca_map_scene(), mode)
+        sim, _ = _orca_map_run(_orca_map_scene(), mode, walls="nearest")
         assert sim.steps == steps and sim.outcome == outcome, (mode, sim.steps, sim.outcome)
         assert np.allclose(sim.pos, final, atol=2e-3), (mode, sim.pos)
+
+
+@test
+def test_orca_chain_walls_round_a_wall_end():
+    """Chain walls (DESIGN_ORCA.md §10): an agent whose path turns 180° round the
+    end of a long wall gets there; the old one-disk model hits that wall."""
+    from scene import Agent, Region, Scene, boundary_walls
+    walls = boundary_walls(100.0) + [((0.0, 50.0), (80.0, 50.0))]
+    scene = Scene(walls=walls, agents=[Agent(pos=(15.0, 40.0), heading=0.0)],
+                  start_region=Region(10, 35, 20, 45), goal_region=Region(5, 55, 25, 70))
+    chain, _ = _orca_map_run(scene, "path")
+    assert chain.outcome == ["goal"], chain.outcome
+    old, _ = _orca_map_run(scene, "path", walls="nearest")
+    assert old.outcome == ["collision"], old.outcome
 
 
 @test
