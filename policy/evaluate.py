@@ -249,9 +249,13 @@ def _eval_chunk(args):
     cfg_dict, weights, scene_dicts, sim_dict, deterministic, seed = args[:6]
     odo = args[6] if len(args) > 6 else None
     exit_rule = args[7] if len(args) > 7 else "enclosed"
+    shield = args[8] if len(args) > 8 else None
     cfg = RunConfig.from_dict(cfg_dict)
     sim_cfg = sim_config_from_dict(sim_dict)
     ctrl = PolicyController(cfg, weights, deterministic, seed, odo, exit_rule)
+    if shield is not None:
+        from shield import Shield
+        ctrl = Shield(ctrl, sim_cfg, shield)
     return [run_episode(Scene.from_dict(d), ctrl, sim_cfg) for d in scene_dicts]
 
 
@@ -394,6 +398,8 @@ def main(argv=None):
                     help="wall memory: switch exits also after circling one (DESIGN_E7.md §11)")
     ap.add_argument("--odo-noise", choices=["none", "low", "high"], default=None,
                     help="odometry drift of the E7 wall memory (DESIGN_E7.md §5.3)")
+    ap.add_argument("--shield", type=float, default=None, metavar="MARGIN",
+                    help="safety filter after the network (shield.py); off by default")
     a = ap.parse_args(argv)
     suites = {s: a.data_root / s for s in a.suites.split(",")}
     first = json.loads((next(iter(suites.values())) / "suite.json").read_text())
@@ -425,11 +431,19 @@ def main(argv=None):
             if not wallmap_on(cfg.env):
                 raise SystemExit("--exit-rule needs a checkpoint trained with --wallmap on")
             identity["exit_rule"] = a.exit_rule
-        factory = lambda: PolicyController(cfg, weights, not a.stochastic, a.seed, a.odo_noise,
-                                           a.exit_rule)
+        if a.shield is not None:
+            identity["shield"] = a.shield
+
+        def factory():
+            ctrl = PolicyController(cfg, weights, not a.stochastic, a.seed, a.odo_noise,
+                                    a.exit_rule)
+            if a.shield is None:
+                return ctrl
+            from shield import Shield
+            return Shield(ctrl, sim_cfg, a.shield)
         make_args = lambda dicts: (_eval_chunk, (cfg.to_dict(), weights, dicts, asdict(sim_cfg),
                                                  not a.stochastic, a.seed, a.odo_noise,
-                                                 a.exit_rule))
+                                                 a.exit_rule, a.shield))
     m = evaluate_suites(factory, make_args, suites, a.workers, a.out, identity, sim_cfg)
     for sname, sm in m["suites"].items():
         print(f"\n{sname}  ({sm['overall']['scenes']} scenes)   success  collision  timeout")

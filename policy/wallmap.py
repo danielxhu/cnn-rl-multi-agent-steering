@@ -20,8 +20,8 @@ Invariants:
 - ``exit_rule = "orbit"`` (evaluation option, 20 Nov 2026; default
   ``"enclosed"`` is the trained rule): besides the enclosure test, an agent
   whose direction to its target exit (estimated heading + bearing) has turned
-  through 360° in one sense has circled the exit without getting in; the exit
-  is marked blocked and the next one taken. Uses only the bearing and
+  through ``ORBIT_TURN`` (180°) in one sense has gone round the exit without
+  getting in; the exit is marked blocked and the next one taken. Uses only the bearing and
   odometry, like the rest of the memory.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ LEAK_GUARD = 0.6            # a field cell with any point this close to a seen s
 DESCENT_STEPS = 3           # downhill: steepest-descent steps on the field (6 units)
 _NBRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 FIELD_REACH = 2             # wavefront moves up to (2, 1): 16 directions (reachability.geodesic_wavefront)
-ORBIT_TURN = 2 * math.pi       # exit_rule "orbit": switch after the target direction turns this far
+ORBIT_TURN = math.pi           # exit_rule "orbit": switch after the target direction turns this far
 ODO_SIGMA = {"none": (0.0, 0.0), "low": (0.02, 0.5), "high": (0.05, 2.0)}   # (speed frac, turn deg)
 
 
@@ -221,7 +221,7 @@ class WallMemory:
         return True
 
     def _orbit_check(self, i, sim, bearing) -> bool:
-        """Accumulate the turning of the direction to the target; switch at 360°."""
+        """Accumulate the turning of the direction to the target; switch at ``ORBIT_TURN``."""
         a = self.est_head[i] + bearing * math.pi
         if self.prev_dir[i] is not None:
             self.orbit[i] += wrap(a - self.prev_dir[i])

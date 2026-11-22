@@ -397,5 +397,65 @@ is unchanged. No retraining: the rule is fixed, not learned.
 | orbit, 180° | 0.881 | 0.075 | 0.006 |
 | no lock (reference) | 0.862 | – | 0.065 |
 
-`ORBIT_TURN` is 360° pending the author's choice; a full turn lets four
-agents circle together for long enough to collide.
+`ORBIT_TURN` is 180° (author's choice, 21 Nov 2026). A full turn lets four
+agents circle together for long enough to collide. Per scene, 180° beats 360°
+on 26 of the 40, ties on 12 and loses on 2: there agents that switched early
+turn back and meet the ones still going round (`scene_00410`). Side-by-side
+GIFs: `results/e7_gifs/orbit/`.
+
+## 12. Robust statistics (21 Nov 2026)
+
+Re-evaluated all seven checkpoints on CPU (deterministic; per-scene rows in
+`results/e7_stats/per_scene/`; means agree with `results/e7/summary_e7.csv`
+to within 0.5 points, float differences between machines) and analysed them
+with `scripts/e7_stats.py`: mean and IQM over the seed x layout matrix,
+95 % CIs from a two-level stratified bootstrap (seeds, then scenes within
+layout, scene draw shared by the paired variants), probability of
+improvement after Agarwal et al. 2021. Full tables: `results/e7_stats/table_stats.md`.
+
+| e7_map vs e3_both (3 vs 3 seeds) | test4 | test_mixed |
+|---|---|---|
+| success, diff of means | +3.2 [+1.4, +5.1] | +3.0 [+1.0, +5.1] |
+| success, diff of IQM | +3.7 [+1.6, +5.7] | +3.5 [+1.4, +5.7] |
+| P(improvement), success | 0.80 | 0.77 |
+| loop rate, relative reduction | 33 % [14, 48] | 35 % [16, 52] |
+| wall crash, diff | -1.3 [-2.4, -0.1] | -1.3 [-2.2, -0.4] |
+
+The success gain's CI excludes 0 on both suites. The loop reduction is
+clearly above 0 but its CI straddles the 1/3 bar of §6, so that criterion is
+neither met nor failed. Per layout (test4), the success gain is credible on
+corridor, doorway and boxrooms; the loop reduction on crossing, cul_de_sac
+and boxrooms; open, room and walls_multi show nothing (ceiling).
+e7_longgru vs e3_both: success +0.7 [-1.0, +2.4], loop -5 % [-22, +9]: no
+effect, so the gain comes from the map, not from a longer memory. With one
+longgru seed its CI reflects scene noise only.
+
+## 13. Safety filter after the network (21 Nov 2026)
+
+`shield.py`, `evaluate.py --shield MARGIN` (off by default): a fixed filter
+that replaces a step coming within `agent_radius + margin` of a surface
+sensed this step (wall/obstacle hits, segments joining hits closer than
+`min_bottleneck`, agent hits) by the nearest safe (turn, speed). Observation
+and own pose only, no map, no retraining. Designed and diagnosed in a fork
+session (static crashes came from wall-hugging: the progress field uses
+radius R, so the shortest path touches walls). Margin 0.3, agents included.
+Statistics as §12 (`results/e7_stats/shield/table_stats.md`):
+
+| test4 (3 seeds each) | success | wall crash | timeout | loop |
+|---|---|---|---|---|
+| e3_both | 89.3 | 5.5 | 2.9 | 11.1 |
+| e3_both + filter | 94.5 | 0.0 | 4.7 | 12.8 |
+| e7_map | 92.5 | 4.2 | 1.8 | 7.4 |
+| e7_map + filter | **96.4** [95.1, 97.6] | 0.0 | 3.0 | 8.4 |
+
+| difference [95 % CI] | test4 | test_mixed |
+|---|---|---|
+| filter on e7_map | +3.9 [2.5, 5.3] | +4.0 [2.1, 5.8] |
+| filter on e3_both | +5.3 [3.4, 6.9] | +5.5 [3.4, 7.8] |
+| e7_map vs e3_both, both filtered | +1.9 [0.4, 3.4] | +1.5 [-0.6, 3.5] |
+| loop, e7_map vs e3_both, both filtered | -4.4 [-6.9, -1.7] | -4.7 [-7.5, -1.8] |
+
+The filter removes wall crashes entirely; part of the gain returns as
+timeouts. With the filter, wall memory's success gain shrinks (on test_mixed
+its CI includes 0) but its loop reduction stays clear: the filter fixes
+crashes, the map fixes looping and dead ends.

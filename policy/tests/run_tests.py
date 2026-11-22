@@ -1966,6 +1966,41 @@ def test_e7_11_dry_run_prints_the_windows_commands():
         assert "unknown runs" in str(e)
 
 
+class _Straight:
+    """Full speed, no turn, whatever is ahead."""
+    def reset(self, sim):
+        self.exit_switches = [7] * len(sim.pos)
+
+    def act(self, sim, obs51):
+        return np.tile([0.0, 1.0], (len(sim.pos), 1))
+
+
+def _shield_scene(wall_x):
+    from scene import Agent, Region, Scene, boundary_walls
+    walls = boundary_walls(100.0) + ([((wall_x, 20.0), (wall_x, 80.0))] if wall_x else [])
+    return Scene(walls=walls, agents=[Agent(pos=(30.0, 50.0), heading=0.0)],
+                 start_region=Region(25, 45, 35, 55), goal_region=Region(85, 40, 95, 60))
+
+
+@test
+def test_shield_stops_a_wall_crash_and_leaves_safe_steps_alone():
+    from evaluate import run_episode
+    from shield import Shield
+    cfg = Config()
+    bare = run_episode(_shield_scene(60.0), _Straight(), cfg)
+    assert bare["static_collision_rate"] == 1.0, bare
+    sh = Shield(_Straight(), cfg, 0.3)
+    r = run_episode(_shield_scene(60.0), sh, cfg)
+    assert r["collision_rate"] == 0.0 and r["timeout_rate"] == 1.0, r
+    assert sh.n_mod > 0 and r["exit_switches"] == 7.0      # inner attributes pass through
+    # nothing in the way: the filter never edits a step and the episode is identical
+    sh = Shield(_Straight(), cfg, 0.3)
+    a = run_episode(_shield_scene(None), _Straight(), cfg, record=True)
+    b = run_episode(_shield_scene(None), sh, cfg, record=True)
+    assert a["outcomes"] == b["outcomes"] == ["goal"] and a["trajectories"] == b["trajectories"]
+    assert sh.n_mod == 0
+
+
 def main():
     only = sys.argv[1:]
     failed = 0
