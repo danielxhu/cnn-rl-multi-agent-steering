@@ -459,3 +459,30 @@ The filter removes wall crashes entirely; part of the gain returns as
 timeouts. With the filter, wall memory's success gain shrinks (on test_mixed
 its CI includes 0) but its loop reduction stays clear: the filter fixes
 crashes, the map fixes looping and dead ends.
+
+The filter was fixed on 25 Nov 2026 (agents no longer stand still in gaps
+narrower than 2 (R + margin)); e7_map + filter is now 97.2 [95.7, 98.4] on
+test4. Current numbers and the training option: DESIGN_SHIELD.md.
+
+## 14. Where agents loop (25 Nov 2026)
+
+`scripts/loop_bearing.py`, results `results/loop_bearing/` (seed 0, no
+filter). Mismatch = angle between the observed goal bearing (straight line)
+and the geodesic direction to the goal.
+
+| e7_map seed 0, test4 | steps with mismatch > 45° |
+|---|---|
+| inside the loop window (first 360° stretch) | 59 % |
+| same looping agents, outside it | 28 % |
+| agents that never loop | 14 % |
+
+| largest mismatch an agent meets | 0–45° | 45–90° | 90–135° | 135–180° |
+|---|---|---|---|---|
+| e3_both loop rate, test4 | 0.9 % | 4.9 % | 20 % | 60 % |
+| e7_map loop rate, test4 | 0.4 % | 3.3 % | 21 % | 41 % |
+| e7_map loop rate, novel | 0 % | 5.5 % | 30 % | 63 % |
+
+Loops happen where the straight-line bearing disagrees with the way round
+the walls; the wall map lowers the worst bin (60 → 41 %) but does not remove
+it. Correlation only: such places also need a detour. A causal check would
+replace the bearing by the geodesic direction at evaluation.

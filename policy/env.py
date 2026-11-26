@@ -176,6 +176,11 @@ class MultiAgentEnv:
             noisy = getattr(env_cfg, "odo_noise", "none") != "none"
             self.wm = WallMemory(sim_cfg, env_cfg, rng if noisy else None)
             self._d += EXTRA
+        self.shield = None
+        if getattr(env_cfg, "shield", -1.0) >= 0:
+            from shield import Shield
+            self.shield = Shield(None, sim_cfg, env_cfg.shield)
+        self._obs51 = None
         self._records: list = []
         self.sim = None
         self.n = 0
@@ -196,9 +201,12 @@ class MultiAgentEnv:
         self.sim = Simulator(scene, self.sim_cfg)
         if self.wm is not None:
             self.wm.reset(self.sim)
+        if self.shield is not None:
+            self.shield.begin(self.sim)
         self.n = len(scene.agents)
         self.ep_return = np.zeros(self.S)
-        return self.sim.observe()
+        self._obs51 = self.sim.observe()
+        return self._obs51
 
     def _present(self, base, alive, first):
         """Stacked (or plain) observation with dead and empty slots zeroed."""
@@ -228,10 +236,16 @@ class MultiAgentEnv:
         was_alive = np.zeros(S, bool)
         was_alive[:n] = sim.active
         sim_a = actions_to_sim(np.asarray(actions)[:n], self.cfg, self.rng)
+        edited = None
+        if self.shield is not None:                 # PPO keeps the sampled action
+            sim_a, edited = self.shield.filter(sim, self._obs51, sim_a)
         obs51, rew, done = sim.step(sim_a)
+        self._obs51 = obs51
 
         reward = np.zeros(S, np.float32)
         reward[:n] = rew
+        if edited is not None and self.cfg.shield_penalty:
+            reward[:n] -= self.cfg.shield_penalty * edited
         reward[~was_alive] = 0.0
         terminal = np.zeros(S, bool)
         truncated = np.zeros(S, bool)

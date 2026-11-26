@@ -287,6 +287,10 @@ def build_parser():
                     help="E7 wall memory and height-field direction (DESIGN_E7.md §1)")
     ap.add_argument("--wallmap-every", type=int, default=None,
                     help="steps between height-field updates (default 4)")
+    ap.add_argument("--shield", type=float, default=None, metavar="MARGIN",
+                    help="safety filter in the rollout (shield.py, DESIGN_SHIELD.md); off by default")
+    ap.add_argument("--shield-penalty", type=float, default=None,
+                    help="reward subtracted per step the filter edits (default 0)")
     ap.add_argument("--stop-after", type=int, default=None, help="iterations, for smoke runs")
     for f in fields(PPOConfig):
         flag = "--" + f.name.replace("_", "-")
@@ -305,7 +309,8 @@ def config_from_args(a) -> RunConfig:
         env["layouts"] = tuple(a.layouts.split(","))
     if a.agents:
         env["agents"] = tuple(a.agents)
-    for k in ("goal_obs", "heading", "stack_k", "wallmap", "wallmap_every"):
+    for k in ("goal_obs", "heading", "stack_k", "wallmap", "wallmap_every", "shield",
+              "shield_penalty"):
         if getattr(a, k) is not None:
             env[k] = getattr(a, k)
     cfg = replace(cfg, ppo=replace(cfg.ppo, **ppo), env=replace(cfg.env, **env))

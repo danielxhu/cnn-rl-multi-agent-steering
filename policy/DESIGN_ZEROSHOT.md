@@ -66,3 +66,70 @@ no stored location, and every agent that arrives has crossed it.
 
 Evaluation only. Estimated 1–3 h on the Mac (10 cores) for all models and
 suites, crowd16 being the slowest.
+
+## 6. Results (25 Nov 2026)
+
+All runs: `results/zeroshot/runs/` (3 seeds per checkpoint variant, ORCA
+1 run); tables with CIs and P(improvement): `results/zeroshot/table_stats.md`
+(`scripts/run_zeroshot.py --stats`). GIFs of typical failures:
+`results/zeroshot/gifs/`. `full` = e7_map + orbit exit rule + filter 0.3.
+`orca_path` is given the map (privileged); `orca_straight` is not.
+
+Success, mean of seeds (%):
+
+| model | test4 | novel | crowd4 | crowd8 | crowd12 | crowd16 |
+|---|---|---|---|---|---|---|
+| e3_both | 89.3 | 72.4 | 90.9 | 88.1 | 85.3 | 83.6 |
+| e7_map | 92.5 | 64.9 | 92.8 | 91.1 | 89.4 | 88.4 |
+| e7_map + orbit | 92.6 | 82.6 | 92.9 | 91.1 | 89.5 | 88.4 |
+| e3_both + filter | 95.4 | 86.1 | 95.8 | 95.2 | 94.2 | 93.0 |
+| **full** | **97.2** | **91.6** [88.4, 94.5] | **97.3** | **96.5** | **95.7** | **94.7** |
+| orca_path | 92.7 | 81.4 | 92.8 | 86.4 | 81.4 | 77.3 |
+| orca_straight | 70.5 | 11.2 | 69.4 | 67.3 | 65.7 | 64.7 |
+
+Novel, per family (success %):
+
+| model | blocked_exit | l_turn | maze | switchback | u_trap |
+|---|---|---|---|---|---|
+| e3_both | 82.0 | 72.2 | 50.5 | 62.4 | 94.7 |
+| e7_map | 0.8 | 84.7 | 67.7 | 87.0 | 84.5 |
+| e7_map + orbit | 88.9 | 84.7 | 67.7 | 87.0 | 84.5 |
+| full | 94.8 | 93.1 | 85.8 | 95.3 | 88.9 |
+| orca_path | 92.5 | 79.2 | 86.8 | 64.8 | 83.8 |
+
+### Answers
+
+1. **Drop test4 → novel.** full −5.6 points (97.2 → 91.6); e3_both −16.9;
+   e7_map −27.6, all of it from blocked_exit (without it, e7_map's four other
+   families average 81.0). Hardest family: maze (full 85.8).
+2. **e7_map vs e3_both on novel.** Without the exit rule e7_map is worse
+   overall (−7.4 [−12.0, −2.7]) because of blocked_exit (−81). Per family it
+   is better on l_turn (+12.5), maze (+17.2), switchback (+24.6), all CIs
+   exclude 0, and worse on u_trap (−10.2 [−21.2, −1.7]: more loops and
+   timeouts, GIF `u_trap/`). full vs e3_both: +19.3 [14.0, 24.5].
+   On crowd suites e7_map > e3_both by +2.0 to +4.8.
+3. **Crowd size.** No cliff up to 16 agents. Change from crowd4 [95 % CI]:
+
+   | model | 8 | 12 | 16 |
+   |---|---|---|---|
+   | e3_both | −2.8 [−4.4, −1.2] | −5.6 [−7.6, −3.8] | −7.3 [−9.6, −5.0] |
+   | e7_map | −1.8 [−3.2, −0.3] | −3.5 [−4.9, −2.1] | −4.5 [−5.9, −2.9] |
+   | full | −0.8 [−1.7, −0.0] | −1.5 [−2.7, −0.5] | −2.6 [−3.6, −1.6] |
+   | orca_path | −6.4 [−8.0, −4.8] | −11.4 [−13.0, −9.8] | −15.5 [−17.1, −13.9] |
+
+   The fall is already significant at 8 agents for every model but small for
+   full (< 1 point); it grows about linearly. Agent–agent crashes for full:
+   1.0 % (4) → 2.2 % (16), mostly crossing (GIF `crowd16/`).
+4. **Exit switch.** The `enclosed` rule never fires on blocked_exit
+   (0 switches; e7_map loops at the blocked exit, 85 % loop rate). The
+   `orbit` rule fires there (0.91 switches per agent) and nowhere else in
+   novel, and lifts blocked_exit 0.8 → 88.9 % (full 94.8). On test4 and the
+   crowd suites it changes nothing (+0.0 to +0.1).
+
+Other metrics (test4, e7_map vs e3_both): stuck −5.4 [−7.1, −3.7], path
+ratio 1.30 vs 1.43, throughput +0.84 per 100 steps. orca_path (with the map)
+has path ratio 1.04 and the highest throughput but the most agent crashes.
+
+Remaining failures (GIFs `maze/`): agents loop at the start where the
+bearing points through a wall (see DESIGN_E7 §14), and under the filter the
+crashes left are agent–agent.

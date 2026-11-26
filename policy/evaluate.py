@@ -250,13 +250,22 @@ def _eval_chunk(args):
     odo = args[6] if len(args) > 6 else None
     exit_rule = args[7] if len(args) > 7 else "enclosed"
     shield = args[8] if len(args) > 8 else None
+    if shield is None:
+        shield = trained_shield(RunConfig.from_dict(cfg_dict))
+    stuck = args[9] if len(args) > 9 else "rotate"
     cfg = RunConfig.from_dict(cfg_dict)
     sim_cfg = sim_config_from_dict(sim_dict)
     ctrl = PolicyController(cfg, weights, deterministic, seed, odo, exit_rule)
     if shield is not None:
         from shield import Shield
-        ctrl = Shield(ctrl, sim_cfg, shield)
+        ctrl = Shield(ctrl, sim_cfg, shield, stuck=stuck)
     return [run_episode(Scene.from_dict(d), ctrl, sim_cfg) for d in scene_dicts]
+
+
+def trained_shield(run_cfg):
+    """The filter margin a checkpoint was trained with (DESIGN_SHIELD.md), else None."""
+    m = getattr(run_cfg.env, "shield", -1.0)
+    return m if m >= 0 else None
 
 
 def _greedy_chunk(args):
@@ -400,6 +409,8 @@ def main(argv=None):
                     help="odometry drift of the E7 wall memory (DESIGN_E7.md §5.3)")
     ap.add_argument("--shield", type=float, default=None, metavar="MARGIN",
                     help="safety filter after the network (shield.py); off by default")
+    ap.add_argument("--shield-stuck", choices=["rotate", "hold"], default="rotate",
+                    help="'hold' reproduces the 21 Nov filter (DESIGN_E7.md §13)")
     a = ap.parse_args(argv)
     suites = {s: a.data_root / s for s in a.suites.split(",")}
     first = json.loads((next(iter(suites.values())) / "suite.json").read_text())
@@ -431,8 +442,11 @@ def main(argv=None):
             if not wallmap_on(cfg.env):
                 raise SystemExit("--exit-rule needs a checkpoint trained with --wallmap on")
             identity["exit_rule"] = a.exit_rule
+        if a.shield is None:
+            a.shield = trained_shield(cfg)              # trained with it: always on
         if a.shield is not None:
             identity["shield"] = a.shield
+            identity["shield_stuck"] = a.shield_stuck
 
         def factory():
             ctrl = PolicyController(cfg, weights, not a.stochastic, a.seed, a.odo_noise,
@@ -440,10 +454,10 @@ def main(argv=None):
             if a.shield is None:
                 return ctrl
             from shield import Shield
-            return Shield(ctrl, sim_cfg, a.shield)
+            return Shield(ctrl, sim_cfg, a.shield, stuck=a.shield_stuck)
         make_args = lambda dicts: (_eval_chunk, (cfg.to_dict(), weights, dicts, asdict(sim_cfg),
                                                  not a.stochastic, a.seed, a.odo_noise,
-                                                 a.exit_rule, a.shield))
+                                                 a.exit_rule, a.shield, a.shield_stuck))
     m = evaluate_suites(factory, make_args, suites, a.workers, a.out, identity, sim_cfg)
     for sname, sm in m["suites"].items():
         print(f"\n{sname}  ({sm['overall']['scenes']} scenes)   success  collision  timeout")

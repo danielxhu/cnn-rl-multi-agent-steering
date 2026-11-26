@@ -46,13 +46,26 @@ METRICS = {                       # column -> (label, higher is better)
     "timeout_rate": ("timeout", False),
     "loop_rate": ("loop", False),
 }
+EXTRA_METRICS = {                 # zeroshot_eval.py columns, used when every run has them
+    "stuck_rate": ("stuck", False),
+    "pause_steps": ("pause steps", False),
+    "throughput": ("throughput /100 steps", True),
+    "path_ratio": ("path ratio", False),
+}
 COMPARE = [("e3_both", "e7_map"), ("e3_both", "e7_longgru")]
 
 
 def load_runs(folder: Path):
-    """{variant: {seed: {suite: {"scene": [...], "layout": [...], metric: array}}}}."""
+    """{variant: {seed: {suite: {"scene": [...], "layout": [...], metric: array}}}}.
+
+    Adds ``EXTRA_METRICS`` to ``METRICS`` when every file has those columns."""
+    files = sorted(folder.glob("*_seed*.csv"))
+    heads = [set(next(csv.reader(open(f, newline="")))) for f in files]
+    for k, v in EXTRA_METRICS.items():
+        if heads and all(k in h for h in heads):
+            METRICS[k] = v
     runs = defaultdict(dict)
-    for f in sorted(folder.glob("*_seed*.csv")):
+    for f in files:
         m = re.fullmatch(r"(.+)_seed(\d+)", f.stem)
         by_suite = defaultdict(lambda: defaultdict(list))
         with open(f, newline="") as fh:
@@ -70,6 +83,7 @@ def load_runs(folder: Path):
 
 def iqm(x):
     x = np.sort(np.ravel(x))
+    x = x[np.isfinite(x)]
     n = len(x)
     lo, hi = int(np.floor(0.25 * n)), int(np.ceil(0.75 * n))
     return x[lo:hi].mean()
@@ -78,7 +92,8 @@ def iqm(x):
 def layout_matrix(scores, seeds, groups, picks):
     """scores [n_seed, n_scene] -> [len(seeds), n_layout] means over picked scenes."""
     s = scores[seeds]
-    return np.stack([s[:, g[p]].mean(1) for g, p in zip(groups, picks)], 1)
+    with np.errstate(all="ignore"):                       # path_ratio is NaN without arrivals
+        return np.stack([np.nanmean(s[:, g[p]], 1) for g, p in zip(groups, picks)], 1)
 
 
 def poi(a, b):
@@ -117,8 +132,8 @@ def analyse(runs, suite, B, rng, compare=COMPARE):
     for v in variants:
         for k in METRICS:
             M = layout_matrix(S[(v, k)], np.arange(len(seeds[v])), groups, full)
-            point[(v, k)] = dict(mean=M.mean(), iqm=iqm(M), lay=M.mean(0), M=M,
-                                 seed_sd=float(M.mean(1).std(ddof=1)) if len(M) > 1 else float("nan"))
+            point[(v, k)] = dict(mean=np.nanmean(M), iqm=iqm(M), lay=np.nanmean(M, 0), M=M,
+                                 seed_sd=float(np.nanmean(M, 1).std(ddof=1)) if len(M) > 1 else float("nan"))
 
     boot = defaultdict(list)
     for _ in range(B):
@@ -127,7 +142,7 @@ def analyse(runs, suite, B, rng, compare=COMPARE):
             sd = rng.integers(0, len(seeds[v]), len(seeds[v]))
             for k in METRICS:
                 M = layout_matrix(S[(v, k)], sd, groups, picks)
-                boot[(v, k)].append((M.mean(), iqm(M), M.mean(0)))
+                boot[(v, k)].append((np.nanmean(M), iqm(M), np.nanmean(M, 0)))
     out = {"layouts": L, "seeds": seeds, "variants": {}, "compare": {}}
     for v in variants:
         out["variants"][v] = {}
@@ -168,18 +183,19 @@ def analyse(runs, suite, B, rng, compare=COMPARE):
     return out
 
 
-def pct(x):
-    return f"{100 * x:.1f}"
+def pct(x, k="success_rate"):
+    """Rates in %, other metrics (steps, ratios, throughput) as they are."""
+    return f"{100 * x:.1f}" if k.endswith("_rate") else f"{x:.2f}"
 
 
-def cis(c):
-    return f"[{pct(c[0])}, {pct(c[1])}]"
+def cis(c, k="success_rate"):
+    return f"[{pct(c[0], k)}, {pct(c[1], k)}]"
 
 
 def markdown(stats, B):
     lines = ["# E7 robust statistics", "",
              f"Two-level stratified bootstrap (seeds, then scenes within layout), B = {B}; "
-             "95 % percentile CIs; all numbers in %. Method: `scripts/e7_stats.py`.", ""]
+             "95 % percentile CIs; rates in %, other metrics as they are. Method: `scripts/e7_stats.py`.", ""]
     for suite, st in stats.items():
         lines += [f"## {suite}", "", "Seeds per variant: " +
                   ", ".join(f"{v} {len(s)}" for v, s in st["seeds"].items()) +
@@ -188,16 +204,16 @@ def markdown(stats, B):
         for v, d in st["variants"].items():
             for k, (lab, _) in METRICS.items():
                 x = d[k]
-                lines.append(f"| {v} | {lab} | {pct(x['mean'])} {cis(x['mean_ci'])} | "
-                             f"{pct(x['iqm'])} {cis(x['iqm_ci'])} |")
+                lines.append(f"| {v} | {lab} | {pct(x['mean'], k)} {cis(x['mean_ci'], k)} | "
+                             f"{pct(x['iqm'], k)} {cis(x['iqm_ci'], k)} |")
         for name, res in st["compare"].items():
             lines += ["", f"### {name}", "",
                       "| metric | diff of means [CI] | diff of IQM [CI] | P(improve) seeds | P(improve) scenes |",
                       "|---|---|---|---|---|"]
             for k, (lab, _) in METRICS.items():
                 r = res[k]
-                lines.append(f"| {lab} | {pct(r['diff_mean'])} {cis(r['diff_mean_ci'])} | "
-                             f"{pct(r['diff_iqm'])} {cis(r['diff_iqm_ci'])} | {r['poi']:.2f} | "
+                lines.append(f"| {lab} | {pct(r['diff_mean'], k)} {cis(r['diff_mean_ci'], k)} | "
+                             f"{pct(r['diff_iqm'], k)} {cis(r['diff_iqm_ci'], k)} | {r['poi']:.2f} | "
                              f"{r['poi_scene']:.2f} |")
             if "rel_reduction" in res["loop_rate"]:
                 r = res["loop_rate"]
@@ -211,7 +227,7 @@ def markdown(stats, B):
                 for k in METRICS:
                     p = res[k]["per_layout"][l]
                     star = "*" if p["ci"][0] > 0 or p["ci"][1] < 0 else ""
-                    cells.append(f"{pct(p['diff'])} {cis(p['ci'])}{star}")
+                    cells.append(f"{pct(p['diff'], k)} {cis(p['ci'], k)}{star}")
                 lines.append(f"| {l} | " + " | ".join(cells) + " |")
         lines.append("")
     return "\n".join(lines)

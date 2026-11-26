@@ -11,6 +11,9 @@ Invariants:
 - ``EnvConfig.wallmap = "off"`` (the default, and what a ``config.json``
   written before E7 loads as) leaves every observation as it was
   (DESIGN_E7.md §3).
+- ``EnvConfig.shield < 0`` (the default, and what older configs load as)
+  leaves the rollout unfiltered; ``>= 0`` filters every executed action and
+  the checkpoint is then always evaluated with its filter (DESIGN_SHIELD.md).
 - ``RunConfig.reward`` holds overrides of the simulator's reward fields
   (``REWARD_FIELDS``, DESIGN_E3.md §3.2); ``{}`` is E2's default reward. It is
   the only way a run changes the simulator, and it is saved with the run.
@@ -48,6 +51,8 @@ class EnvConfig:
     wallmap: str = "off"                    # "off" | "on": E7 wall memory (DESIGN_E7.md §1)
     wallmap_every: int = 4                  # steps between height-field updates
     odo_noise: str = "none"                 # "none" | "low" | "high" odometry drift (eval only)
+    shield: float = -1.0                    # safety filter margin in the env (shield.py); < 0 = off
+    shield_penalty: float = 0.0             # reward subtracted per step the filter edits
 
 
 @dataclass

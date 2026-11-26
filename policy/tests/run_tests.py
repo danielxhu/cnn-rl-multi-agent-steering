@@ -2001,6 +2001,61 @@ def test_shield_stops_a_wall_crash_and_leaves_safe_steps_alone():
     assert sh.n_mod == 0
 
 
+@test
+def test_shield_squeezes_through_a_narrow_gap_and_hold_does_not():
+    """Gap of 4.4 between two discs: wider than 2R = 4, narrower than 2 (R + 0.3).
+    The 25 Nov rule lets the agent through; the 21 Nov "hold" rule never does."""
+    from evaluate import run_episode
+    from scene import Agent, Obstacle, Region, Scene, boundary_walls
+    from shield import Shield
+    cfg = Config()
+    gap = 4.4
+    obs = [Obstacle(c=(60.0, 50.0 + gap / 2 + 6.0), r=6.0), Obstacle(c=(60.0, 50.0 - gap / 2 - 6.0), r=6.0)]
+    walls = boundary_walls(100.0) + [((60.0, 0.0), (60.0, 38.0)), ((60.0, 62.0), (60.0, 100.0))]
+    scene = Scene(walls=walls, obstacles=obs, agents=[Agent(pos=(40.0, 50.0), heading=0.0)],
+                  start_region=Region(35, 45, 45, 55), goal_region=Region(85, 40, 95, 60))
+    new = run_episode(scene, Shield(_Straight(), cfg, 0.3), cfg)
+    old = run_episode(scene, Shield(_Straight(), cfg, 0.3, stuck="hold"), cfg)
+    assert new["success_rate"] == 1.0, new
+    assert old["timeout_rate"] == 1.0, old
+
+
+@test
+def test_shield_in_the_training_env():
+    """EnvConfig.shield (DESIGN_SHIELD.md): off by default and for old configs;
+    on, it filters the executed actions, charges shield_penalty per edited
+    step, and a checkpoint trained with it is evaluated with it."""
+    from evaluate import trained_shield
+    from policyconfig import RunConfig
+    assert EnvConfig().shield < 0
+    d = RunConfig.make("gru", 0).to_dict()
+    d["env"].pop("shield"), d["env"].pop("shield_penalty")      # a config from before
+    old = RunConfig.from_dict(d)
+    assert old.env.shield < 0 and trained_shield(old) is None
+    on = RunConfig.make("gru", 0)
+    on = RunConfig.from_dict({**on.to_dict(), "env": {**on.to_dict()["env"], "shield": 0.3}})
+    assert trained_shield(on) == 0.3
+
+    def stream(ec):
+        e = envmod.MultiAgentEnv(ec, Config(), np.random.default_rng(11))
+        e.reset()
+        rews, edits, coll = [], 0, 0
+        for _ in range(150):
+            out = e.step(np.tile([0.0, 1.0], (e.S, 1)))        # full speed, straight on
+            rews.append(out["reward"].copy())
+            if e.shield is not None:
+                edits = e.shield.n_mod
+        coll = sum(r["collision"] for r in e.episode_records())
+        return np.array(rews), edits, coll
+
+    base = dict(layouts=("corridor",), agents=(4, 4))
+    r_off, _, c_off = stream(EnvConfig(**base))
+    r_on, n_on, c_on = stream(EnvConfig(**base, shield=0.3))
+    r_pen, n_pen, _ = stream(EnvConfig(**base, shield=0.3, shield_penalty=0.1))
+    assert c_off > 0 and c_on < c_off and n_on > 0, (c_off, c_on, n_on)
+    assert n_pen == n_on and math.isclose(float((r_on - r_pen).sum()), 0.1 * n_on, rel_tol=1e-4)
+
+
 def main():
     only = sys.argv[1:]
     failed = 0

@@ -6,7 +6,8 @@
                (l_turn, switchback, maze, u_trap, blocked_exit), 100 scenes
                each, 4 agents, 0-6 obstacles (as test4), seed 10000
     crowd4 / crowd8 / crowd12 / crowd16
-               the ten training families (``LAYOUTS_E2``), 30 scenes each,
+               the ten training families (``LAYOUTS_E2``), 100 scenes each
+               (30 before 25 Nov 2026, DESIGN_ZEROSHOT.md),
                exactly N agents asked for (small start boxes may hold fewer;
                the scene's own count is reported), seed 11000 + N
 
@@ -28,7 +29,7 @@ from suites import make_suite  # noqa: E402
 
 NOVEL_SPECS = {"novel": (tuple(NOVEL_LAYOUTS), 100, (4, 4), 10000)}
 for _n in (4, 8, 12, 16):
-    NOVEL_SPECS[f"crowd{_n}"] = (LAYOUTS_E2, 30, (_n, _n), 11000 + _n)
+    NOVEL_SPECS[f"crowd{_n}"] = (LAYOUTS_E2, 100, (_n, _n), 11000 + _n)
 
 
 def main(argv=None):
