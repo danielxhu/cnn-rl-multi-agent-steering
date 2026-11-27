@@ -632,3 +632,35 @@ layouts: what is left needs information (exploration learned in training,
 e.g. PLR or an "unseen share of the route" input) or is the network itself
 (2.7 points on test4 even with the true direction). Keep the visit cost
 (`--wallmap-visit 2`); u_trap needs a better target point.
+
+### 14.6 What is around a loop? (27 Nov 2026)
+
+`scripts/loop_cause.py`, e7_map + orbit, no filter, 3 seeds; first loop
+window of every looping agent, classified in this order: another agent within
+7 (`agent`), winds round an obstacle centre (`obstacle`), within 4 of a
+static surface for half the window (`wall`), else `open`. Control: the same
+"agent within 7" test on a 48-step window in the middle of every agent that
+does not loop. `results/loop_cause/`.
+
+| | loop windows | agent | control | obstacle | wall | open |
+|---|---|---|---|---|---|---|
+| true direction (§14.1 oracle), test4 | 321 | 55.1 | 47.1 | 0.6 | 3.7 | 40.5 |
+| true direction, novel ordinary | 228 | 74.6 | 38.8 | 0.0 | 0.9 | 24.6 |
+| plain, test4 | 880 | 53.8 | 49.9 | 0.8 | 1.8 | 43.6 |
+| plain, novel ordinary | 587 | 78.4 | 41.8 | 0.0 | 0.7 | 21.0 |
+
+(novel ordinary = l_turn, maze, switchback; % of loop windows.)
+
+- Loops are not detours round obstacles (< 1 %) and rarely wall-hugging:
+  the loop metric is not miscounting benign manoeuvres. With the true
+  direction, only 54-72 % of looping agents still reach the goal.
+- test4: a neighbour is nearby in 55 % of loops against 47 % of ordinary
+  windows; meeting agents explains little there. The rest are `open`
+  loops: the network itself.
+- novel (narrow corridors of maze / switchback / l_turn): 75 % against
+  39 %; meeting another agent in a corridor triggers about a third to a half
+  of the loops (turning round to make way).
+Training fixes thus split: agent encounters in narrow corridors (crowded
+narrow levels, e.g. PLR; the velocity-aware filter of DESIGN_SHIELD §4
+handles crashes, not the turning round) and the network's own open-space
+loops (training with the filter, PLR, teacher-student distillation).

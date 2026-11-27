@@ -93,3 +93,15 @@ abstracts. Entries marked *(preprint)* have no confirmed peer-reviewed venue.
   2108.12346).
 - Seed counts: E7 has 3 seeds, not 5. `rliable` intervals at n = 3 will be
   wide. Say so rather than hide it.
+
+## Revised order (after review with the author, 21 Nov)
+
+On `test4`, `e7_map`'s main failure is **wall and obstacle collisions (4.2 %)**, mostly in corridor, boxrooms and cul_de_sac. Timeouts are 1.8 % and agent–agent collisions 1.4 %, the latter concentrated in crossing. #9 already exists as the behaviour-gap experiment (`results/gap/`; v2 is still on a branch). It only needs a PKL citation.
+
+1. #1 `rliable` reporting, adding bootstrap over scenes because there are only 3 seeds.
+2. #2 zero-shot tests on new families and agent counts, with the new metrics.
+3. #8 E6 first version, with `e7_map` as the oracle (CPU).
+4. Once compute arrives: wall collisions and narrow gaps first. #3 and #4 become a crossing-specific experiment, compared against a rule fallback.
+   - #3 changes the bearing-only 50-number observation and makes E6 rule extraction harder.
+   - #4 only reduces training noise and does not change what the policy can do.
+5. #5 is on hold until the remaining loops have been classified. If they are dithering at gaps or jams rather than exploration failures, a novelty bonus will not help.

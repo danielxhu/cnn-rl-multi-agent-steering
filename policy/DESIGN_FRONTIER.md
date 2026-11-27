@@ -1,8 +1,10 @@
 # Frontier comparison — design (draft, 26 Nov 2026)
 
 Status: design approved by Daniel 26 Nov 2026 (JAX allowed, everything on AutoDL,
-`policy/jaxsim/`). Done: simulator port + port check (§2.1). Next: level bank,
-numpy controller for evaluation, IPPO + SFL trainer, PLR for the compromise arm.
+`policy/jaxsim/`). Implemented 27 Nov: simulator port + port check (§2.1),
+network matching `nets.ActorCritic` (§2.2), IPPO + SFL trainer, export to
+`evaluate.py` checkpoints, PLR for the compromise arm (§3), AutoDL driver
+`scripts/run_frontier.py` (§5). **Runs pending (AutoDL).**
 
 Question: does the hand-designed feature layer (E7 wall memory, height-field
 direction, orbit exit rule) still pay off against (a) the same learner with a
@@ -60,13 +62,38 @@ training loop. GPU numbers come from the AutoDL pilot.
 Not yet covered: long episodes that time out (random actions end in ~32
 steps); to be checked with a trained policy once the numpy controller exists.
 
-## 3. Compromise arm
+### 2.2 Network and trainer (`jaxsim/net.py`, `jaxsim/train_ippo.py`)
 
-`train.py --plr` (default off; `--resume` works): Robust PLR (Jiang et al.
-2021) over the same level bank; score = positive value loss; replay
-probability 0.5, staleness 0.3, rank temperature 0.3. `e3_both` flags
-otherwise unchanged. CPU test: the sampler's distribution and that `--plr`
-off reproduces the old rollout stream.
+- The network is `nets.ActorCritic` (gru) with torch's parameter names and
+  gate order; `jaxsim/net_check.py` compares it with torch on the same
+  weights (max difference 2e-7). `jaxsim/export_ckpt.py` writes an
+  ordinary checkpoint (e3_both observation, GRU of the trained width), so
+  every arm is evaluated by the same `evaluate.py` on the CPU simulator.
+- Learning rule as `ppo.py`: return-std reward scaling, GAE(0.99, 0.95),
+  clip 0.2, per-minibatch advantage normalisation, unclipped value loss,
+  Adam 3e-4 annealed linearly to 0, grad norm 0.5; minibatches split by
+  environment and replay the whole rollout (T = 128) from its stored state.
+- SFL: every 20 updates, 2048 bank levels x 2 stochastic rollouts; the 1000
+  with the highest p (1 - p) form the buffer; new episodes draw from it with
+  probability 0.5. Validation: 1024 levels of a separate bank (seed 7),
+  deterministic; best by success.
+- Mac CPU sanity run (2 k-level bank, 256 envs, hidden 128, uniform val):
+  validation success 0.24 / 0.34 / 0.47 / 0.52 / 0.63 at 0.36 / 0.72 / 1.1 /
+  1.5 / 3.0 M agent-steps, 20-54 k agent-steps/s. Exported and run by
+  `zeroshot_eval.py` on the CPU simulator: test4 success 0.626 (JAX
+  validation 0.633), so the trained policy behaves the same on both
+  simulators (the long-episode item of §2.1 is covered).
+
+## 3. Compromise arm (`plr.py`)
+
+`train.py --plr on` (default off; `--resume` restores the sampler):
+Prioritized Level Replay (Jiang et al. 2021) over a fixed bank of
+`--level-bank` (50 000) levels, level i = `env.bank_scene(i)` (seeded
+`sample_scene`), the same levels as the JAX bank. Replay probability 0.5,
+rank temperature 0.3, staleness 0.3; score = mean positive GAE advantage of
+the level's steps in the batch. Rollout size as e3_both (10 x 8 envs, T 128),
+e3_both reward and observation. Test `test_plr_sampler_bank_and_training`.
+The robust variant (no gradient from new levels) is not used.
 
 ## 4. Comparison
 
@@ -94,6 +121,20 @@ torch and CUDA JAX, the repository cloned from git.
 | evaluation of all three arms (incl. the existing e7_map checkpoints) | AutoDL, same instance type, so wall-clock numbers compare |
 
 The GTX 1070 box is not needed for this comparison.
+
+### 5.1 On AutoDL
+
+```bash
+source /etc/network_turbo                     # AutoDL's GitHub / PyPI accelerator
+git clone <repo> && cd research
+pip install -r requirements.txt "jax[cuda12]==0.7.2" optax==0.2.9
+cd policy
+python scripts/run_frontier.py --step setup --workers 16     # banks, val suite, device check
+python scripts/run_frontier.py --step pilot                  # speed -> hours and cost
+python scripts/run_frontier.py --step frontier --seeds 0     # one GPU per seed, or in turn
+python scripts/run_frontier.py --step compromise --seeds 0   # ~11 cores per seed
+python scripts/run_frontier.py --step eval                   # -> policy/results/frontier/
+```
 
 ## 6. Dependencies
 

@@ -2083,6 +2083,45 @@ def test_shield_in_the_training_env():
     assert n_pen == n_on and math.isclose(float((r_on - r_pen).sum()), 0.1 * n_on, rel_tol=1e-4)
 
 
+@test
+def test_plr_sampler_bank_and_training():
+    """plr.py (DESIGN_FRONTIER.md §3): off by default; bank levels are fixed;
+    the sampler favours high scores and stale levels; a PLR run records level
+    ids, saves the sampler and resumes it."""
+    import tempfile as tf
+    import train
+    from dataclasses import replace as rep
+    from plr import LevelSampler, level_scores
+    assert EnvConfig().plr == "off"
+    c = Config()
+    ec = EnvConfig(layouts=("doorway",), agents=(2, 3))
+    a, b = envmod.bank_scene(5, ec, c), envmod.bank_scene(5, ec, c)
+    assert a.as_dict() == b.as_dict() and envmod.bank_scene(6, ec, c).as_dict() != a.as_dict()
+    sp = LevelSampler(10, rho=0.5, beta=0.3, staleness=0.3)
+    assert np.allclose(sp.probs(), 0.1)
+    sp.update({2: 5.0, 7: 1.0})
+    p = sp.probs()
+    assert math.isclose(p.sum(), 1.0) and p[2] > p[7] > p[0] and math.isclose(p[[2, 7]].sum(), 0.5)
+    sp.update({i: 1.0 for i in range(10) if i != 2})          # level 2 now stale
+    assert sp.probs()[2] > LevelSampler(10).probs()[2] * 0.5
+    sp2 = LevelSampler(10)
+    sp2.load_state_dict(sp.state_dict())
+    assert np.array_equal(sp2.probs(), sp.probs())
+    lvl = np.array([[0, 0, -1], [0, 1, 1]])
+    adv = np.array([[1.0, -1.0, 9.0], [3.0, 2.0, -2.0]])
+    alive = np.array([[True, True, True], [True, True, False]])
+    assert level_scores(lvl, adv, alive) == {0: (1.0 + 0.0 + 3.0) / 3, 1: 2.0}
+    rc = rep(tiny_run_cfg("gru", E=2, T=16, L=16, W=0), ckpt_every=1)
+    rc = rep(rc, env=rep(rc.env, layouts=("doorway",), agents=(2, 3), plr="on", level_bank=50))
+    with tf.TemporaryDirectory() as d:
+        out = Path(d) / "run"
+        train.run(rc, c, out, quiet=True, stop_after=3)
+        ck = train.load_ckpt(out / "ckpt_last.pt")
+        assert ck["plr"] is not None and ck["plr"]["seen"].any() and ck["plr"]["clock"] == 3
+        train.run(rep(rc, ppo=rep(rc.ppo, total_steps=10 ** 9)), c, out, resume=True, quiet=True,
+                  stop_after=1)
+        assert train.load_ckpt(out / "ckpt_last.pt")["plr"]["clock"] == 4
+
 def main():
     only = sys.argv[1:]
     failed = 0

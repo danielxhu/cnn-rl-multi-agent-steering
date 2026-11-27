@@ -54,6 +54,12 @@ class EnvConfig:
     odo_noise: str = "none"                 # "none" | "low" | "high" odometry drift (eval only)
     shield: float = -1.0                    # safety filter margin in the env (shield.py); < 0 = off
     shield_penalty: float = 0.0             # reward subtracted per step the filter edits
+    plr: str = "off"                        # "off" | "on": prioritized level replay (plr.py)
+    level_bank: int = 50000                 # PLR: levels env.bank_scene(0 .. n - 1)
+    level_bank_seed: int = 20261126
+    plr_rho: float = 0.5                    # PLR: replay probability
+    plr_beta: float = 0.3                   # PLR: rank temperature
+    plr_staleness: float = 0.3              # PLR: staleness mixing
 
 
 @dataclass

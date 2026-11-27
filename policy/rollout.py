@@ -40,7 +40,7 @@ from env import MultiAgentEnv, make_env_rng, obs_dim
 from nets import ActorCritic
 
 ARRAY_KEYS = ("obs", "action", "logp", "value", "reward", "bootstrap", "alive",
-              "terminal", "truncated", "first")
+              "terminal", "truncated", "first", "level")
 
 
 def collect(model, envs, state, T, L, gen):
@@ -56,7 +56,7 @@ def collect(model, envs, state, T, L, gen):
         ("obs", (D,), np.float32), ("action", (2,), np.float32), ("logp", (), np.float32),
         ("value", (), np.float32), ("reward", (), np.float32), ("bootstrap", (), np.float32),
         ("alive", (), bool), ("terminal", (), bool), ("truncated", (), bool),
-        ("first", (), bool))}
+        ("first", (), bool), ("level", (), np.int32))}
     H = model.H
     h_actor = np.zeros((T // L, N, H), np.float32)
     h_critic = np.zeros((T // L, N, H), np.float32)
@@ -84,8 +84,9 @@ def collect(model, envs, state, T, L, gen):
         nxt_first = np.zeros((E, S), bool)
         final = np.zeros((E, S, D), np.float32)
         for e, env in enumerate(envs):
-            r = env.step(a_np[e])
             sl = slice(e * S, (e + 1) * S)
+            out["level"][t, sl] = getattr(env, "level", -1)     # the scene obs[t] belongs to
+            r = env.step(a_np[e])
             out["reward"][t, sl] = r["reward"]
             out["terminal"][t, sl] = r["terminal"]
             out["truncated"][t, sl] = r["truncated"]
@@ -135,7 +136,11 @@ class RolloutWorker:
             "h": self.model.initial_state(N),
         }
 
-    def collect(self, weights, T=None, L=None):
+    def collect(self, weights, T=None, L=None, probs=None):
+        """``probs``: PLR level distribution for scenes started from now on (None: off)."""
+        if probs is not None:
+            for env in self.envs:
+                env.level_probs = probs
         self.model.set_weights(weights)
         return collect(self.model, self.envs, self.state, T or self.cfg.ppo.T,
                        L or self.cfg.ppo.L, self.gen)
@@ -150,7 +155,8 @@ def _worker_main(conn, run_cfg, sim_cfg, worker, epoch):
             msg, payload = conn.recv()
             if msg == "close":
                 break
-            conn.send(("batch", w.collect(payload)))
+            weights, probs = payload if isinstance(payload, tuple) else (payload, None)
+            conn.send(("batch", w.collect(weights, probs=probs)))
     except (EOFError, KeyboardInterrupt):
         pass
     except Exception as exc:                    # surface the failure in the learner
@@ -205,11 +211,11 @@ class WorkerPool:
         assert msg == expect, msg
         return payload
 
-    def collect(self, weights) -> dict:
+    def collect(self, weights, probs=None) -> dict:
         if self.inline:
-            return merge([w.collect(weights) for w in self.workers])
+            return merge([w.collect(weights, probs=probs) for w in self.workers])
         for c in self.conns:
-            c.send(("collect", weights))
+            c.send(("collect", weights if probs is None else (weights, probs)))
         return merge([self._recv(c, "batch") for c in self.conns])
 
     def close(self):

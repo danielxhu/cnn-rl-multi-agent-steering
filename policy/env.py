@@ -160,6 +160,11 @@ def sample_scene(env_cfg, sim_cfg, rng) -> Scene:
         return scene
 
 
+def bank_scene(i: int, env_cfg, sim_cfg) -> Scene:
+    """Level ``i`` of the fixed bank (PLR, DESIGN_FRONTIER.md §3; also ``jaxsim/bank.py``)."""
+    return sample_scene(env_cfg, sim_cfg, np.random.default_rng([env_cfg.level_bank_seed, int(i)]))
+
+
 class MultiAgentEnv:
     def __init__(self, env_cfg, sim_cfg, rng):
         self.cfg, self.sim_cfg, self.rng = env_cfg, sim_cfg, rng
@@ -196,7 +201,13 @@ class MultiAgentEnv:
         return out
 
     def _new_scene(self):
-        scene = sample_scene(self.cfg, self.sim_cfg, self.rng)
+        probs = getattr(self, "level_probs", None)          # set by the PLR learner
+        if probs is None:
+            self.level = -1
+            scene = sample_scene(self.cfg, self.sim_cfg, self.rng)
+        else:
+            self.level = int(self.rng.choice(len(probs), p=probs))
+            scene = bank_scene(self.level, self.cfg, self.sim_cfg)
         self.scene = scene
         self.sim = Simulator(scene, self.sim_cfg)
         if self.wm is not None:

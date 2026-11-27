@@ -101,7 +101,7 @@ def save_ckpt(path: Path, model, opt, scaler, state: dict, cfg: RunConfig, sim_c
                 "optimiser": opt.state_dict(), "scaler": scaler.state_dict(),
                 "iteration": state["iteration"], "agent_steps": state["agent_steps"],
                 "seconds": state["seconds"], "rng": torch.get_rng_state(),
-                "config": cfg.to_dict(sim_cfg)}, tmp)
+                "plr": state.get("plr"), "config": cfg.to_dict(sim_cfg)}, tmp)
     tmp.replace(path)                                     # atomic on both OSes
 
 
@@ -121,7 +121,8 @@ def restore(path: Path, model, opt, scaler, state: dict):
     model.load_state_dict(ck["model"])
     opt.load_state_dict(ck["optimiser"])
     scaler.load_state_dict(ck["scaler"])
-    state.update(iteration=ck["iteration"], agent_steps=ck["agent_steps"], seconds=ck["seconds"])
+    state.update(iteration=ck["iteration"], agent_steps=ck["agent_steps"], seconds=ck["seconds"],
+                 plr=ck.get("plr"))
     torch.set_rng_state(ck["rng"])
 
 
@@ -186,6 +187,13 @@ def run(cfg: RunConfig, sim_cfg, out: Path, val_suite: Path | None = None, resum
     if best_path.exists():
         best = load_ckpt(best_path).get("val")
 
+    sampler = None
+    if getattr(cfg.env, "plr", "off") == "on":           # DESIGN_FRONTIER.md §3
+        from plr import LevelSampler
+        e = cfg.env
+        sampler = LevelSampler(e.level_bank, e.plr_rho, e.plr_beta, e.plr_staleness)
+        if state.get("plr"):
+            sampler.load_state_dict(state["plr"])
     pool = WorkerPool(cfg, sim_cfg, epoch=state["iteration"] if state["iteration"] else None)
     interrupted = False
     t_start = time.time() - state["seconds"]
@@ -197,7 +205,10 @@ def run(cfg: RunConfig, sim_cfg, out: Path, val_suite: Path | None = None, resum
             lr = p.lr * max(0.0, 1.0 - state["agent_steps"] / p.total_steps)
             for g in opt.param_groups:
                 g["lr"] = lr
-            batch = pool.collect(model.get_weights())
+            if sampler is None:
+                batch = pool.collect(model.get_weights())
+            else:
+                batch = pool.collect(model.get_weights(), probs=sampler.probs())
             alive = batch["alive"]
             done = batch["terminal"] | batch["truncated"]
             scaler.update(batch["reward"].astype(np.float64), done, alive)
@@ -207,6 +218,10 @@ def run(cfg: RunConfig, sim_cfg, out: Path, val_suite: Path | None = None, resum
                 err = max(np.abs(lp - batch["logp"]).max(), np.abs(v - batch["value"]).max())
                 if err > (1e-4 if device.type == "cpu" else 1e-2):
                     print(f"WARNING: replay differs from rollout by {err:.2e}", flush=True)
+            if sampler is not None:
+                from plr import level_scores
+                sampler.update(level_scores(batch["level"], adv, alive))
+                state["plr"] = sampler.state_dict()
             rng = np.random.default_rng(np.random.SeedSequence([cfg.seed, it, 777]))
             model.train()
             stats = update(model, opt, batch, adv, ret, p, device, rng)
@@ -287,6 +302,9 @@ def build_parser():
                     help="E7 wall memory and height-field direction (DESIGN_E7.md §1)")
     ap.add_argument("--wallmap-every", type=int, default=None,
                     help="steps between height-field updates (default 4)")
+    ap.add_argument("--plr", choices=["off", "on"], default=None,
+                    help="prioritized level replay over a fixed level bank (DESIGN_FRONTIER.md §3)")
+    ap.add_argument("--level-bank", type=int, default=None, help="PLR: number of bank levels")
     ap.add_argument("--wallmap-visit", type=float, default=None,
                     help="visit cost per step on the height field (DESIGN_E7.md §14.3); 0 = off")
     ap.add_argument("--shield", type=float, default=None, metavar="MARGIN",
@@ -311,7 +329,7 @@ def config_from_args(a) -> RunConfig:
         env["layouts"] = tuple(a.layouts.split(","))
     if a.agents:
         env["agents"] = tuple(a.agents)
-    for k in ("goal_obs", "heading", "stack_k", "wallmap", "wallmap_every", "wallmap_visit", "shield",
+    for k in ("goal_obs", "heading", "stack_k", "wallmap", "wallmap_every", "wallmap_visit", "plr", "level_bank", "shield",
               "shield_penalty"):
         if getattr(a, k) is not None:
             env[k] = getattr(a, k)

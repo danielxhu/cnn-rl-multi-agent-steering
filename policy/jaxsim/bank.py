@@ -1,6 +1,11 @@
 """Scenes -> fixed-size arrays for ``jaxsim.sim`` (numpy only, runs on CPU).
 
     python jaxsim/bank.py --n 50000 --out data/jaxbank/train.npz --workers 9
+    python jaxsim/bank.py --n 1024 --bank-seed 7 --out data/jaxbank/val.npz --workers 9
+
+Level ``i`` is ``env.bank_scene(i)`` (seed ``--bank-seed``, default
+``EnvConfig.level_bank_seed``): the PLR arm's levels, so both arms train on
+the same bank. ``index`` records i for every packed level.
 
 A level holds at most ``N`` agents, ``O`` obstacles, ``W`` walls, ``F``
 distinct goals of ``G`` regions each (training scenes: 8 / 6 / 23 / 2 / 3).
@@ -110,42 +115,45 @@ def stack(levels):
 
 
 def _build(args):
-    seed, n = args
+    bank_seed, ids = args
     from config import Config
-    from env import sample_scene
+    from env import bank_scene
     from policyconfig import EnvConfig
-    rng = np.random.default_rng(seed)
-    ec, cfg = EnvConfig(), Config()
-    out, scenes = [], []
-    while len(out) < n:
-        sc = sample_scene(ec, cfg, rng)
+    ec, cfg = EnvConfig(level_bank_seed=bank_seed), Config()
+    out, names, idx = [], [], []
+    for i in ids:
+        sc = bank_scene(i, ec, cfg)
         try:
             out.append(pack(sc, cfg))
-        except ValueError:
+        except ValueError:                  # larger than the fixed arrays: left out
             continue
-        scenes.append(sc.layout)
-    return out, scenes
+        names.append(sc.layout)
+        idx.append(i)
+    return out, names, idx
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--n", type=int, default=50000)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--bank-seed", type=int, default=None, help="default EnvConfig.level_bank_seed")
     ap.add_argument("--out", type=Path, default=POLICY / "data" / "jaxbank" / "train.npz")
     ap.add_argument("--workers", type=int, default=0)
     a = ap.parse_args(argv)
     import multiprocessing as mp
+    from policyconfig import EnvConfig
+    seed = EnvConfig().level_bank_seed if a.bank_seed is None else a.bank_seed
     k = max(1, a.workers) * 4
-    jobs = [((a.seed, j), a.n // k + (j < a.n % k)) for j in range(k)]
+    jobs = [(seed, list(range(j, a.n, k))) for j in range(k)]
     if a.workers:
         with mp.get_context("spawn").Pool(a.workers) as pool:
             parts = pool.map(_build, jobs)
     else:
         parts = [_build(j) for j in jobs]
-    levels = [lv for p, _ in parts for lv in p]
-    layouts = np.array([s for _, p in parts for s in p])
+    rows = sorted((i, lv, nm) for p, names, ids in parts for lv, nm, i in zip(p, names, ids))
+    levels = [lv for _, lv, _ in rows]
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(a.out, layout=layouts, **stack(levels))
+    np.savez_compressed(a.out, layout=np.array([nm for _, _, nm in rows]),
+                        index=np.array([i for i, _, _ in rows], np.int64), **stack(levels))
     print(f"{len(levels)} levels -> {a.out}")
 
 

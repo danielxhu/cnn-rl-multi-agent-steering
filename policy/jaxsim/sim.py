@@ -119,10 +119,10 @@ def _contains(rects, p):
             (rects[:, 1] <= p[1]) & (p[1] <= rects[:, 3])).any()
 
 
-def _geo_dist(P, field, p, euclid):
+def _geo_dist(P, look, m, p, euclid):
     """``reachability.geodesic_distance``: bilinear over finite corners, else the
-    best of the 5 x 5 neighbourhood plus the straight line, else ``euclid``."""
-    m = field.shape[0]
+    best of the 5 x 5 neighbourhood plus the straight line, else ``euclid``.
+    ``look(iy, ix)``: the field value (indices already clipped to [0, m))."""
     cell = P.geo_cell
     u, v = p[0] / cell - 0.5, p[1] / cell - 0.5
     x0, y0 = jnp.floor(u), jnp.floor(v)
@@ -133,7 +133,7 @@ def _geo_dist(P, field, p, euclid):
         for dx, wx in ((0, 1.0 - fx), (1, fx)):
             iy, ix = y0 + dy, x0 + dx
             inb = (iy >= 0) & (iy < m) & (ix >= 0) & (ix < m)
-            val = field[jnp.clip(iy, 0, m - 1), jnp.clip(ix, 0, m - 1)]
+            val = look(jnp.clip(iy, 0, m - 1), jnp.clip(ix, 0, m - 1))
             w = wy * wx
             use = inb & jnp.isfinite(val) & (w > 0.0)
             num = num + jnp.where(use, w * jnp.where(use, val, 0.0), 0.0)
@@ -145,20 +145,28 @@ def _geo_dist(P, field, p, euclid):
         for ox in range(-2, 3):
             iy, ix = cy + oy, cx + ox
             inb = (iy >= 0) & (iy < m) & (ix >= 0) & (ix < m)
-            val = field[jnp.clip(iy, 0, m - 1), jnp.clip(ix, 0, m - 1)]
+            val = look(jnp.clip(iy, 0, m - 1), jnp.clip(ix, 0, m - 1))
             dd = val + jnp.hypot(p[0] - (ix + 0.5) * cell, p[1] - (iy + 0.5) * cell)
             best = jnp.minimum(best, jnp.where(inb & jnp.isfinite(val), dd, jnp.inf))
     return jnp.where(den > 1e-9, bil, jnp.where(jnp.isfinite(best), best, euclid))
 
 
-def _progress_dist(P, lv, pos):
-    """(N,) distance of the progress reward (straight line or geodesic)."""
+def _progress_dist(P, lv, pos, geo_bank=None):
+    """(N,) distance of the progress reward (straight line or geodesic).
+
+    The fields are ``lv["geo"]`` (F, m, m), or with ``geo_bank`` (levels, F,
+    m, m) row ``lv["level"]`` of it, read cell by cell (no per-env copy)."""
     rects = lv["rects"][lv["goal_id"]]                              # (N, G, 4)
     _, eu = jax.vmap(_nearest_point)(rects, pos)
     if not P.geodesic:
         return eu
-    fields = lv["geo"][lv["goal_id"]]                               # (N, m, m)
-    return jax.vmap(lambda f, p, e: _geo_dist(P, f, p, e))(fields, pos, eu)
+    if geo_bank is None:
+        m = lv["geo"].shape[-1]
+        look = lambda g: (lambda iy, ix: lv["geo"][g, iy, ix])     # noqa: E731
+    else:
+        m = geo_bank.shape[-1]
+        look = lambda g: (lambda iy, ix: geo_bank[lv["level"], g, iy, ix])  # noqa: E731
+    return jax.vmap(lambda g, p, e: _geo_dist(P, look(g), m, p, e))(lv["goal_id"], pos, eu)
 
 
 # ------------------------------------------------------------------ sensing
@@ -217,10 +225,10 @@ def _peer_hits(P, prev, pos, moving):
 
 
 # ----------------------------------------------------------------- dynamics
-def step(P, lv, st, actions):
+def step(P, lv, st, actions, geo_bank=None):
     """One synchronous step -> (state, obs (N, 51), rewards (N,))."""
     actions = actions.astype(st.pos.dtype)
-    prev_d = _progress_dist(P, lv, st.pos)
+    prev_d = _progress_dist(P, lv, st.pos, geo_bank)
     moving = st.active
     head = jnp.where(moving, st.heading + jnp.clip(actions[:, 0], -1, 1) * P.max_turn, st.heading)
     head = jnp.mod(head + math.pi, 2 * math.pi) - math.pi
@@ -229,7 +237,7 @@ def step(P, lv, st, actions):
     steps = st.steps + 1
 
     peer = _peer_hits(P, st.pos, pos, moving)
-    d = _progress_dist(P, lv, pos)
+    d = _progress_dist(P, lv, pos, geo_bank)
     rew = -P.step_cost + P.progress_weight * (prev_d - d)
     static = jax.vmap(lambda p: _hits_static(P, lv, p))(pos)
     hit = moving & (static | peer)
