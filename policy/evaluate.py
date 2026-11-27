@@ -105,9 +105,10 @@ class PolicyController:
     """A trained actor-critic acting on the 50-number (or stacked) observation."""
 
     def __init__(self, run_cfg: RunConfig, weights: dict, deterministic=True, seed=0,
-                 odo_noise=None, exit_rule="enclosed"):
+                 odo_noise=None, exit_rule="enclosed", wallmap_visit=None):
         self.cfg, self.det = run_cfg, deterministic
         self.exit_rule = exit_rule
+        self.wallmap_visit = wallmap_visit          # None: as trained
         self.seed = seed
         self.odo_noise = odo_noise or getattr(run_cfg.env, "odo_noise", "none")
         torch.set_num_threads(1)
@@ -133,6 +134,8 @@ class PolicyController:
                 import zlib
                 key = zlib.crc32(json.dumps(sim.scene.as_dict(), sort_keys=True).encode())
                 rng = np.random.default_rng([self.seed, key])
+            if self.wallmap_visit is not None:
+                ec = replace(ec, wallmap_visit=self.wallmap_visit)
             self.wm = WallMemory(sim.cfg, replace(ec, odo_noise=self.odo_noise), rng,
                                  exit_rule=self.exit_rule)
             self.wm.reset(sim)
@@ -253,9 +256,10 @@ def _eval_chunk(args):
     if shield is None:
         shield = trained_shield(RunConfig.from_dict(cfg_dict))
     stuck = args[9] if len(args) > 9 else "rotate"
+    visit = args[10] if len(args) > 10 else None
     cfg = RunConfig.from_dict(cfg_dict)
     sim_cfg = sim_config_from_dict(sim_dict)
-    ctrl = PolicyController(cfg, weights, deterministic, seed, odo, exit_rule)
+    ctrl = PolicyController(cfg, weights, deterministic, seed, odo, exit_rule, visit)
     if shield is not None:
         from shield import Shield
         ctrl = Shield(ctrl, sim_cfg, shield, stuck=stuck)
@@ -407,6 +411,9 @@ def main(argv=None):
                     help="wall memory: switch exits also after circling one (DESIGN_E7.md §11)")
     ap.add_argument("--odo-noise", choices=["none", "low", "high"], default=None,
                     help="odometry drift of the E7 wall memory (DESIGN_E7.md §5.3)")
+    ap.add_argument("--wallmap-visit", type=float, default=None, metavar="W",
+                    help="wall memory: visit cost on the height field (DESIGN_E7.md §14.3); "
+                         "default as trained")
     ap.add_argument("--shield", type=float, default=None, metavar="MARGIN",
                     help="safety filter after the network (shield.py); off by default")
     ap.add_argument("--shield-stuck", choices=["rotate", "hold"], default="rotate",
@@ -442,6 +449,10 @@ def main(argv=None):
             if not wallmap_on(cfg.env):
                 raise SystemExit("--exit-rule needs a checkpoint trained with --wallmap on")
             identity["exit_rule"] = a.exit_rule
+        if a.wallmap_visit is not None:
+            if not wallmap_on(cfg.env):
+                raise SystemExit("--wallmap-visit needs a checkpoint trained with --wallmap on")
+            identity["wallmap_visit"] = a.wallmap_visit
         if a.shield is None:
             a.shield = trained_shield(cfg)              # trained with it: always on
         if a.shield is not None:
@@ -450,14 +461,15 @@ def main(argv=None):
 
         def factory():
             ctrl = PolicyController(cfg, weights, not a.stochastic, a.seed, a.odo_noise,
-                                    a.exit_rule)
+                                    a.exit_rule, a.wallmap_visit)
             if a.shield is None:
                 return ctrl
             from shield import Shield
             return Shield(ctrl, sim_cfg, a.shield, stuck=a.shield_stuck)
         make_args = lambda dicts: (_eval_chunk, (cfg.to_dict(), weights, dicts, asdict(sim_cfg),
                                                  not a.stochastic, a.seed, a.odo_noise,
-                                                 a.exit_rule, a.shield, a.shield_stuck))
+                                                 a.exit_rule, a.shield, a.shield_stuck,
+                                                 a.wallmap_visit))
     m = evaluate_suites(factory, make_args, suites, a.workers, a.out, identity, sim_cfg)
     for sname, sm in m["suites"].items():
         print(f"\n{sname}  ({sm['overall']['scenes']} scenes)   success  collision  timeout")

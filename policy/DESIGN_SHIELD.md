@@ -95,3 +95,43 @@ Wall crashes are 0 with the filter. 21 Nov filter -> fixed filter: e7_map
 
 With both filtered, the wall map's success gain is no longer clear (CI just
 includes 0; IQM +2.1 [0.5, 3.7] on test4), its loop reduction is.
+
+## 4. Does knowing other agents' motion help? (26 Nov 2026)
+
+`scripts/agent_predict_test.py`, e7_map + orbit + filter 0.3, 3 seeds,
+privileged neighbour state (agents within `fov_range` and the 220° FOV).
+`results/agent_predict/`.
+
+| filter treats agents as | agent crash test4 | crowd16 | success test4 | crowd16 |
+|---|---|---|---|---|
+| ray hit points (current) | 0.58 | 2.12 | 97.2 | 94.7 |
+| full disks, current position | 0.72 | 2.40 | 97.1 | 94.5 |
+| disks along the constant-velocity next step | 0.12 | 0.87 | 97.7 | 95.7 |
+| same, estimated from the agent's own rays (`est`) | 0.12 | 0.74 | 97.6 | **95.9** |
+| same, velocity smoothed (`est_ema`, 0.5) | **0.08** | **0.72** | **97.7** | **95.9** |
+
+Position alone does not help; the next-step motion removes 60–80 % of the
+agent crashes. Without the filter, a constant-velocity closest-approach test
+(< 2R within 5 steps) foresees 76 / 72 / 60 % of test4 crashes 1 / 2 / 3
+steps before (crowd16 68 / 47 / 35 %), with 3.3 (8.1) false alarms per 100
+agent-steps.
+
+The last two rows use no privileged neighbour state: agent ray hits are
+grouped into blobs (adjacent sectors), a blob's centre is its hit points
+pushed R along their rays, its velocity the difference to the nearest centre
+of the previous step (gate 7, clamped to `max_speed`); the ray hit points are
+kept. Estimate errors (all seeds; `results/agent_predict/filter_est_est_ema.json`):
+
+| | centre error median / p90 | velocity error median / p90 | true speed median |
+|---|---|---|---|
+| test4, `est` | 0.62 / 1.66 | 0.55 / 1.63 | 2.5 |
+| test4, `est_ema` | 0.62 / 1.66 | 0.43 / 1.16 | 2.5 |
+| crowd16, `est` | 0.63 / 1.75 | 0.64 / 2.03 | 1.08 |
+| crowd16, `est_ema` | 0.63 / 1.75 | 0.44 / 1.29 | 1.08 |
+
+The estimate is as good as the privileged one: agent crashes fall from
+0.58 / 2.12 to 0.08 / 0.72 (-86 % / -66 %), success +0.5 / +1.2. Probably
+slightly better than `cv` because the ray points are kept and the estimated
+disks err on the large side. Caveats: own pose is the true pose (as in the
+filter itself), the rays have no noise, 3 seeds without CIs (crash counts are
+small on test4). Candidate default for the filter: `est_ema`.

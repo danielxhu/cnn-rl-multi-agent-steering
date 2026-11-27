@@ -1,0 +1,23 @@
+{
+ "loop window": {
+  "steps": 12855,
+  "median |downhill| deg": 49.7,
+  "share |downhill| < 30": 0.2824581874756904,
+  "share > 90 (downhill behind)": 0.2602100350058343,
+  "flips per 100 steps": 2.5826526643329446
+ },
+ "loopers, elsewhere": {
+  "steps": 14753,
+  "median |downhill| deg": 34.3,
+  "share |downhill| < 30": 0.45394157120585643,
+  "share > 90 (downhill behind)": 0.1728462007727242,
+  "flips per 100 steps": 1.0641903341693215
+ },
+ "never loop": {
+  "steps": 129824,
+  "median |downhill| deg": 21.5,
+  "share |downhill| < 30": 0.6026697683017007,
+  "share > 90 (downhill behind)": 0.08295076411141238,
+  "flips per 100 steps": 0.5222455016021691
+ }
+}

@@ -1,0 +1,20 @@
+{
+ "test4 none": {
+  "crash foreseen 1 steps before (%)": 76.0,
+  "crash foreseen 2 steps before (%)": 72.0,
+  "crash foreseen 3 steps before (%)": 60.0,
+  "crash foreseen 4 steps before (%)": 40.6,
+  "crash foreseen 5 steps before (%)": 35.4,
+  "crashes": 175,
+  "false alarms per 100 agent-steps": 3.26
+ },
+ "crowd16 none": {
+  "crash foreseen 1 steps before (%)": 68.5,
+  "crash foreseen 2 steps before (%)": 46.7,
+  "crash foreseen 3 steps before (%)": 35.1,
+  "crash foreseen 4 steps before (%)": 29.5,
+  "crash foreseen 5 steps before (%)": 24.8,
+  "crashes": 2155,
+  "false alarms per 100 agent-steps": 8.1
+ }
+}

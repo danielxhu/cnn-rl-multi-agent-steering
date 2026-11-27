@@ -1721,6 +1721,33 @@ def test_e7_5_downhill_goes_around_a_seen_wall():
 
 
 @test
+def test_e7_12_visit_cost_off_by_default_and_pushes_out_of_a_circled_area():
+    """DESIGN_E7 §14.3: each step adds W to the agent's field cell; descent on field + visits."""
+    import wallmap as W
+    scene = _e7_scene([], (30.0, 50.0), 0.0)
+    cfg = Config()
+    sim = Simulator(scene, cfg)
+    off = W.WallMemory(cfg, EnvConfig(wallmap="on"))
+    off.reset(sim)
+    assert off.visit == 0.0 and off.visits is None
+    wm = W.WallMemory(cfg, EnvConfig(wallmap="on", wallmap_visit=2.0))
+    wm.reset(sim)
+    wm.update_field(0, sim)
+    fld = wm.field[0].copy()
+    c, s_ = wm.downhill(0, 0.0)
+    assert abs(math.atan2(s_, c)) <= math.radians(20)        # nothing visited: towards the goal
+    cx, cy = int(30.0 // W.FIELD_CELL), int(50.0 // W.FIELD_CELL)
+    assert wm.visits[0, cy, cx] == 2.0 and wm.visits[0].sum() == 2.0
+    wm.visits[0, cy - 1:cy + 2, cx + 1:cx + 4] += 1000.0     # as if it had circled ahead
+    c, s_ = wm.downhill(0, 0.0)
+    assert abs(math.atan2(s_, c)) > math.radians(30), math.degrees(math.atan2(s_, c))
+    assert np.array_equal(wm.field[0], fld)                  # the field itself is untouched
+    off.update_field(0, sim)
+    c, s_ = off.downhill(0, 0.0)
+    assert abs(math.atan2(s_, c)) <= math.radians(20) and off.visits is None
+
+
+@test
 def test_e7_6_exit_lock_and_switch():
     import wallmap as W
     from scene import Region

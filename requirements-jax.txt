@@ -1,0 +1,3 @@
+# Only for policy/jaxsim (DESIGN_FRONTIER.md). On a CUDA machine use jax[cuda12].
+jax==0.7.2
+optax==0.2.9

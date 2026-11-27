@@ -1,0 +1,66 @@
+{
+ "test4 est": {
+  "success_rate": 97.63,
+  "agent_collision_rate": 0.12,
+  "static_collision_rate": 0.01,
+  "timeout_rate": 2.24,
+  "blobs": 377297,
+  "centre error median / p90": [
+   0.62,
+   1.66
+  ],
+  "velocity error median / p90 (matched)": [
+   0.55,
+   1.63
+  ],
+  "true speed median (matched)": 2.5
+ },
+ "test4 est_ema": {
+  "success_rate": 97.73,
+  "agent_collision_rate": 0.08,
+  "static_collision_rate": 0.01,
+  "timeout_rate": 2.17,
+  "blobs": 375601,
+  "centre error median / p90": [
+   0.62,
+   1.66
+  ],
+  "velocity error median / p90 (matched)": [
+   0.43,
+   1.16
+  ],
+  "true speed median (matched)": 2.5
+ },
+ "crowd16 est": {
+  "success_rate": 95.92,
+  "agent_collision_rate": 0.74,
+  "static_collision_rate": 0.02,
+  "timeout_rate": 3.32,
+  "blobs": 6500171,
+  "centre error median / p90": [
+   0.63,
+   1.75
+  ],
+  "velocity error median / p90 (matched)": [
+   0.64,
+   2.03
+  ],
+  "true speed median (matched)": 1.08
+ },
+ "crowd16 est_ema": {
+  "success_rate": 95.88,
+  "agent_collision_rate": 0.72,
+  "static_collision_rate": 0.03,
+  "timeout_rate": 3.37,
+  "blobs": 6484988,
+  "centre error median / p90": [
+   0.63,
+   1.75
+  ],
+  "velocity error median / p90 (matched)": [
+   0.44,
+   1.29
+  ],
+  "true speed median (matched)": 1.08
+ }
+}

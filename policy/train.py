@@ -287,6 +287,8 @@ def build_parser():
                     help="E7 wall memory and height-field direction (DESIGN_E7.md §1)")
     ap.add_argument("--wallmap-every", type=int, default=None,
                     help="steps between height-field updates (default 4)")
+    ap.add_argument("--wallmap-visit", type=float, default=None,
+                    help="visit cost per step on the height field (DESIGN_E7.md §14.3); 0 = off")
     ap.add_argument("--shield", type=float, default=None, metavar="MARGIN",
                     help="safety filter in the rollout (shield.py, DESIGN_SHIELD.md); off by default")
     ap.add_argument("--shield-penalty", type=float, default=None,
@@ -309,7 +311,7 @@ def config_from_args(a) -> RunConfig:
         env["layouts"] = tuple(a.layouts.split(","))
     if a.agents:
         env["agents"] = tuple(a.agents)
-    for k in ("goal_obs", "heading", "stack_k", "wallmap", "wallmap_every", "shield",
+    for k in ("goal_obs", "heading", "stack_k", "wallmap", "wallmap_every", "wallmap_visit", "shield",
               "shield_penalty"):
         if getattr(a, k) is not None:
             env[k] = getattr(a, k)

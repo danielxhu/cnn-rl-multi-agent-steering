@@ -50,6 +50,7 @@ class EnvConfig:
     action_noise: float = 0.0
     wallmap: str = "off"                    # "off" | "on": E7 wall memory (DESIGN_E7.md §1)
     wallmap_every: int = 4                  # steps between height-field updates
+    wallmap_visit: float = 0.0              # visit cost per step on the height field (DESIGN_E7 §14.3); 0 = off
     odo_noise: str = "none"                 # "none" | "low" | "high" odometry drift (eval only)
     shield: float = -1.0                    # safety filter margin in the env (shield.py); < 0 = off
     shield_penalty: float = 0.0             # reward subtracted per step the filter edits

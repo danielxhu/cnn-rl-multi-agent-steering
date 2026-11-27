@@ -80,6 +80,7 @@ class WallMemory:
         self.exit_rule = exit_rule
         self.c = sim_cfg
         self.every = int(env_cfg.wallmap_every)
+        self.visit = float(getattr(env_cfg, "wallmap_visit", 0.0))   # §14.3; 0 = off
         sv, st = ODO_SIGMA[env_cfg.odo_noise]
         self.sig_v, self.sig_t = sv, math.radians(st)
         if (sv or st) and rng is None:
@@ -112,6 +113,7 @@ class WallMemory:
         self.field = [None] * n
         self.computed = np.zeros(n, bool)
         self.started = False
+        self.visits = np.zeros((n, self.mc, self.mc), np.float32) if self.visit > 0 else None
 
     def _odometry(self, sim):
         moved = self.prev_active
@@ -239,8 +241,20 @@ class WallMemory:
         unreachable cell); the direction points at the cell reached. One
         cell of the field is too coarse to compare neighbours directly. With
         no field, no finite cell around the agent, or no descent, the bearing
-        is used."""
+        is used.
+
+        With ``visit`` > 0 (DESIGN_E7 §14.3, after LRTA*) the agent first adds
+        ``visit`` to the field cell it is in and the descent runs on field +
+        visits, so an area it keeps circling rises until the descent leads
+        out; the field itself (and the exit switch's reachability) is unchanged."""
         fld = self.field[i]
+        if fld is not None and self.visits is not None:
+            m = self.mc
+            p = self.est_pos[i]
+            cx = min(max(int(p[0] // FIELD_CELL), 0), m - 1)
+            cy = min(max(int(p[1] // FIELD_CELL), 0), m - 1)
+            self.visits[i, cy, cx] += self.visit
+            fld = fld + self.visits[i]
         ang = None
         if fld is not None:
             target = self._descend(fld, self.est_pos[i])

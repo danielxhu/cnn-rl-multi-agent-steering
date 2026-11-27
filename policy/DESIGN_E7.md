@@ -486,3 +486,149 @@ Loops happen where the straight-line bearing disagrees with the way round
 the walls; the wall map lowers the worst bin (60 → 41 %) but does not remove
 it. Correlation only: such places also need a detour. A causal check would
 replace the bearing by the geodesic direction at evaluation.
+
+### 14.1 Causal check: the true direction (`scripts/oracle_dir.py`, 3 seeds, orbit rule, no filter)
+
+Evaluation only, privileged: the wall-map direction (or the bearing) is
+replaced by the geodesic direction of the true map. `goalpoint` keeps the
+wall map but puts its target on the goal's nearest point instead of method
+A's far point (needs the goal distance). Results `results/oracle_dir/`.
+
+| e7_map + orbit | loop test4 | loop novel | success test4 | success novel | u_trap | blocked_exit |
+|---|---|---|---|---|---|---|
+| as trained | 7.3 | 18.6 | 92.6 | 82.6 | 84.5 | 88.9 |
+| true direction (downhill) | **2.7** | **4.3** | 93.5 | 87.4 | 96.0 | 96.9 |
+| true direction (downhill + bearing) | 2.8 | 4.2 | 93.8 | 87.1 | 95.0 | 96.2 |
+| goalpoint | 7.3 | 14.3 | 92.8 | 84.1 | 95.3 | 85.6 |
+| e3_both, true bearing | 7.4 (11.1) | 13.9 (21.4) | 91.5 (89.3) | 81.7 (72.4) | | |
+
+The direction signal causes about two thirds of the loops (test4) and three
+quarters (novel); the rest is the network. The goal point fixes u_trap
+(method A overshoot) and nothing else, so on test4 the wrong directions come
+from the map being incomplete, not from the target point.
+
+`scripts/loop_downhill.py` (seed 0): inside loop windows the downhill
+direction points behind the agent on 26 % of steps (never-loopers 8 %) and
+flips by > 90° 2.6 times per 100 steps (never-loopers 0.5; novel 3.2 vs
+2.0): a newly seen wall moves the route to the other side and the agent
+turns round with it.
+
+### 14.2 Route memory does not help (`scripts/route_memory_test.py`, 3 seeds)
+
+Keep the previous route unless blocked or longer than `keep` x the new
+shortest (evaluation only). Success / loop (%):
+
+| e7_map + orbit | test4 | novel |
+|---|---|---|
+| as trained | 92.6 / 7.3 | 82.6 / 18.6 |
+| route memory, keep 1.0 | 92.2 / 7.7 | 81.1 / 19.0 |
+| route memory, keep 1.5 | 91.5 / 7.8 | 79.7 / 18.0 |
+
+Why (novel, every 5th scene, seed 0): when the route is replaced, the old one
+was blocked by a newly seen wall 1940 times and merely longer than 1.5 x only
+41 times. The route flips because the map is incomplete (unseen = free), not
+because of near-ties; the gap to the true-map direction (§14.1) is the value
+of knowing the map, not something a commitment rule recovers.
+
+### 14.3 Fixed virtual goal and visit cost (26 Nov 2026)
+
+`scripts/vgoal_visit_test.py`, evaluation only: e7_map + orbit rule, no
+filter, 3 seeds; `results/vgoal_visit/`. (1) Method A's far point is kept
+until the bearing's world direction turns more than 45 / 90 deg from where it
+was set, or for 25 steps (new exit: always recomputed). (2) Visit cost
+(LRTA*-style): each step W is added to the field cell the agent is in; the
+downhill direction is taken on field + visits.
+
+Success / loop (%):
+
+| | test4 | novel | u_trap | blocked_exit |
+|---|---|---|---|---|
+| baseline | 92.6 / 7.3 | 82.5 / 18.6 | 84.5 / 18.7 | 88.9 / 25.4 |
+| fixed goal, 45 deg | 92.8 / 8.1 | 81.4 / 16.8 | 79.4 / 24.2 | 85.2 / 15.8 |
+| fixed goal, 90 deg | 92.7 / 8.3 | 81.5 / 16.6 | 79.8 / 24.0 | 85.4 / 15.4 |
+| fixed goal, 25 steps | 92.9 / 8.1 | 80.2 / 19.1 | 70.1 / 30.5 | 88.2 / 19.2 |
+| visit W = 0.5 | 92.6 / 7.5 | 83.0 / 18.5 | 87.0 / 17.4 | 88.4 / 26.5 |
+| visit W = 1 | 92.7 / 7.7 | 83.3 / 18.4 | 88.4 / 17.3 | 88.2 / 25.8 |
+| visit W = 2 | 92.9 / 7.9 | 83.7 / 18.5 | 89.8 / 17.2 | 88.9 / 27.1 |
+| visit W = 4 | 92.9 / 8.0 | 83.4 / 18.5 | 90.0 / 17.3 | 87.4 / 26.4 |
+| visit W = 8 | 92.8 / 8.0 | 83.2 / 18.5 | 89.7 / 17.2 | 87.6 / 26.4 |
+| 90 deg + W = 2 | 92.9 / 8.6 | 81.7 / 17.3 | 82.1 / 23.9 | 85.3 / 18.4 |
+
+Paired differences against the baseline (scene bootstrap, 95 % CI):
+
+| | test4 succ | novel succ | u_trap succ | novel loop | blocked loop |
+|---|---|---|---|---|---|
+| fixed goal 90 deg | +0.1 [-0.5, 0.7] | -1.0 [-2.4, 0.3] | **-4.7 [-7.9, -1.5]** | -2.0 [-3.3, -0.7] | -10.0 [-13.3, -6.5] |
+| visit W = 2 | +0.4 [0.1, 0.7] | **+1.1 [0.2, 2.0]** | **+5.2 [3.3, 7.3]** | -0.1 [-0.9, 0.7] | +1.7 [-0.6, 3.9] |
+
+Findings:
+- The moving goal is not the main cause of loops: fixing it leaves test4
+  loops slightly higher and novel loops 2 points lower. It cuts loops in
+  blocked_exit by 10 points but costs success there and in u_trap (a goal
+  fixed behind the U's back wall keeps the agent on the wrong side longer).
+- The visit cost does not change the loop rate but turns loops into
+  successes: u_trap timeouts 10.3 -> 4.6 %, success +5.2. Agents still
+  circle, but a circled area rises and the descent eventually leads out.
+  Flat above W = 2.
+- Combining both is worse than the visit cost alone.
+Candidate feature-layer change: visit cost W = 2 (off by default); a
+training run with it would show whether the network uses it better.
+
+### 14.4 How much is the incomplete map? (26 Nov 2026)
+
+`scripts/vgoal_visit_test.py --full-map`: the wall memory starts with the
+scene's true occupancy (privileged, diagnostic); method A's far point is
+unchanged. 3 seeds, paired scene bootstrap against the baseline:
+
+| | success | loop | timeout |
+|---|---|---|---|
+| test4 | 92.6 -> 93.8 (+1.2 [0.4, 2.0]) | 7.3 -> **3.7** (-3.7 [-4.5, -2.9]) | 1.8 -> 1.3 |
+| novel: l_turn, maze, switchback | 79.8 -> 86.3 (+6.5 [4.5, 8.6]) | 16.3 -> **7.2** (-9.1 [-11.0, -7.1]) | 5.2 -> 2.4 |
+| novel: u_trap | 84.5 -> 65.3 (-19.2 [-23.6, -14.8]) | 18.7 -> **43.2** (+24.6 [19.9, 29.2]) | 10.3 -> 25.5 |
+| novel: blocked_exit | 88.9 -> 87.3 (-1.6 [-4.8, 1.3]) | 25.4 -> 31.2 (+5.8 [1.6, 9.8]) | 0.8 -> 0.7 |
+
+Per novel layout, loop: l_turn 7.6 -> 5.4, maze 27.8 -> 10.7, switchback
+13.5 -> 5.7.
+
+- In ordinary layouts the incomplete map causes about half of the loops
+  (test4: map 3.6, method A's target 1.0 (§14.1 oracle: 2.7), the network
+  itself 2.7 points).
+- In u_trap the full map makes it much worse: the far point behind the U's
+  back wall is then certainly reached only round the outside, so the agent
+  circles more firmly. The u_trap loops come from the target point, not
+  the map; the incomplete map partly hid it. blocked_exit likewise.
+- So two different fixes: exploration (visit cost, §14.3) for ordinary
+  layouts, a better target point for u_trap.
+
+### 14.5 Inertia and dead-end seal (26 Nov 2026)
+
+`scripts/vgoal_visit_test.py --inertia N` (a turn-back of the downhill
+direction, > 90 deg, is held off for N steps unless a wall ray within 6 is
+seen along the old direction) and `--seal C` (Daniel's DFS idea: the trail
+walked since the last turn-back gets + C once the agent has left it).
+3 seeds; success / loop (%); * = paired scene-bootstrap 95 % CI excludes 0.
+
+| | test4 | novel: l_turn, maze, switchback | u_trap | blocked_exit |
+|---|---|---|---|---|
+| baseline | 92.6 / 7.3 | 79.8 / 16.3 | 84.5 / 18.7 | 88.9 / 25.4 |
+| visit W = 2 (§14.3) | 92.9* / 7.9* | 79.9 / 16.1 | **89.8*** / 17.2 | 88.9 / 27.1 |
+| inertia 5 | 92.9 / 8.2* | 79.0 / 17.7* | 89.1* / 15.0* | 87.4 / 27.5 |
+| inertia 10 | 93.1* / 8.2* | 79.1 / 19.4* | 85.6 / 14.2* | 85.7* / 30.4* |
+| seal C = 20 | 92.6 / 7.5 | 79.8 / 16.5 | 88.4* / 17.4* | 89.5 / 25.8 |
+| seal C = 50 | identical to C = 20 | | | |
+| seal 50 + visit 2 | 92.8 / 8.0* | 79.9 / 16.2 | 89.8* / 17.3 | 87.7 / 26.4 |
+
+Turn-backs held: 31.5 k (N = 5), 45.6 k (N = 10); trails sealed: 8.9 k.
+
+- None lowers the loop rate in the ordinary layouts, where §14.4 puts half
+  the loops on the incomplete map; inertia raises it (holding a direction
+  the new walls have already ruled out). Consistent with §14.2: the
+  turn-backs are real blockings, so commitment rules have nothing to keep.
+- The seal fires 8.9 k times but changes little, the same for C = 20 and
+  50: the loops are not re-entries into an explored dead end.
+- Only the u_trap gains, and the visit cost alone gets it (+5.3).
+Rule-level changes to the direction signal are exhausted for the ordinary
+layouts: what is left needs information (exploration learned in training,
+e.g. PLR or an "unseen share of the route" input) or is the network itself
+(2.7 points on test4 even with the true direction). Keep the visit cost
+(`--wallmap-visit 2`); u_trap needs a better target point.
